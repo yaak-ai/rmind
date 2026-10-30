@@ -9,8 +9,8 @@ Detector boxes for the labelled frames are computed once (Grounding DINO) and
 cached next to the labels, so crops at train time look like inference crops.
 
     CUDA_VISIBLE_DEVICES=1 uv run --extra pallet python -m rmind.scripts.pallet_train_entry \
-        --labels /nasa/data/d12/yaak/pallet-labels/entry_labels_v1.json \
-        --images /nasa/data/d12/yaak/pallet-labels/entry2 --backbone convnext_base.fb_in22k_ft_in1k --out ...
+        --labels /nasa/team-space/nikita/pallet-detector/labels/entry_labels_v1.json \
+        --images /nasa/team-space/nikita/pallet-detector/images/entry --backbone convnext_base.fb_in22k_ft_in1k --out ...
 """
 
 import argparse
@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from structlog import get_logger
-from torch.utils.data import DataLoader, RandomSampler
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from rmind.pallet.correspondence import NAMES
 from rmind.pallet.entry import EntryKeypoints, load_labels
@@ -112,8 +112,37 @@ def main() -> None:
         help="loose/off-centre crops and low-resolution simulation",
     )
     parser.add_argument("--no-wandb", action="store_true")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--pseudo-labels",
+        type=Path,
+        nargs="*",
+        default=[],
+        help="pallet_pseudo_entry outputs, training only",
+    )
+    parser.add_argument(
+        "--pseudo-weight",
+        type=float,
+        default=1.0,
+        help="sampling mass of all pseudo-labels relative to all hand labels",
+    )
+    parser.add_argument(
+        "--loaded-weight",
+        type=float,
+        default=1.0,
+        help="sampling weight of loaded pallets (load tags from <labels>.load.json)",
+    )
+    parser.add_argument(
+        "--boxes",
+        type=Path,
+        nargs="*",
+        default=[],
+        help="crop boxes that replace the cached ones, e.g. pallet_det_boxes outputs; "
+        "a null box falls back to the labelled points' bounds",
+    )
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
+    torch.manual_seed(args.seed)
     run = start(
         "train-keypoints",
         vars(args),
@@ -130,16 +159,49 @@ def main() -> None:
     is_val = lambda n: any(n.startswith(j) for j in args.val_jobs)  # ruff: ignore[lambda-assignment]
     train_labels = {n: v for n, v in labels.items() if not is_val(n)}
     val_labels = {n: v for n, v in labels.items() if is_val(n)}
+    # pseudo-labels: training only (validation stays on hand labels), weighted down
+    pseudo: dict = {}
+    for extra in args.pseudo_labels:
+        use_labels(run, extra, "pseudo-labels")
+        pseudo |= {n: v for n, v in load_labels(extra).items() if not is_val(n)}
+        boxes |= json.loads(extra.with_suffix(".boxes.json").read_text())
+    train_labels |= pseudo
+    for f in args.boxes:
+        boxes |= json.loads(f.read_text())
+    load_tags: dict[str, str] = {}
+    for f in [args.labels, *args.pseudo_labels]:
+        if f.with_suffix(".load.json").exists():
+            load_tags |= json.loads(f.with_suffix(".load.json").read_text())
     train = EntryKeypoints(
-        args.images, train_labels, boxes, train=True, quality_aug=args.quality_aug
+        args.images,
+        train_labels,
+        boxes,
+        train=True,
+        seed=args.seed,
+        quality_aug=args.quality_aug,
     )
     val = EntryKeypoints(args.images, val_labels, boxes, train=False)
-    logger.info("data", train=len(train), val=len(val), backbone=args.backbone)
+    # sampling weight per training pallet: hand labels x 1, pseudo-labels x --pseudo-weight
+    # (summed over all of them, so the pseudo set as a whole gets that share), loaded x --loaded-weight
+    n_hand, n_pseudo = len(train_labels) - len(pseudo), max(len(pseudo), 1)
+    weights = [
+        (args.pseudo_weight * n_hand / n_pseudo if name in pseudo else 1.0)
+        * (args.loaded_weight if load_tags.get(name) == "loaded" else 1.0)
+        for name, *_ in train.items
+    ]
+    logger.info(
+        "data",
+        train=len(train),
+        pseudo=len(pseudo),
+        val=len(val),
+        backbone=args.backbone,
+        loaded=sum(load_tags.get(n) == "loaded" for n, *_ in train.items),
+    )
     train_loader = DataLoader(
         train,
         batch_size=args.batch,
-        sampler=RandomSampler(
-            train, replacement=True, num_samples=args.samples_per_epoch
+        sampler=WeightedRandomSampler(
+            weights, num_samples=args.samples_per_epoch, replacement=True
         ),
         num_workers=8,
         drop_last=True,
