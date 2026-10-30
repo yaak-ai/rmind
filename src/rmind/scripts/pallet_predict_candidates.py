@@ -39,7 +39,16 @@ def main() -> None:
     parser.add_argument(
         "--cache",
         type=Path,
-        default=Path("/nasa/data/d12/yaak/pallet-proposer-20261027-ab/cache"),
+        default=Path(
+            "/nasa/team-space/nikita/pallet-detector-ab/proposer-cache-20261027/cache"
+        ),
+    )
+    parser.add_argument(
+        "--detections",
+        type=Path,
+        default=None,
+        help="pallet_detect_all output instead of the Grounding DINO cache; its boxes "
+        "hug the pallet base, so each is grown upwards by half its height for the crop",
     )
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--jobs", nargs="*", default=None)
@@ -57,14 +66,24 @@ def main() -> None:
     )
     net.load_state_dict(ckpt["state_dict"])
     net = net.to(args.device).eval()
-    jobs = args.jobs or sorted(p.stem for p in args.cache.glob("*.pt"))
+    source = args.detections or args.cache
+    jobs = args.jobs or sorted(
+        p.stem for p in source.glob("*.parquet" if args.detections else "*.pt")
+    )
     for job in jobs:
         if (args.out / f"{job}.parquet").exists():
             continue
-        cache = torch.load(
-            args.cache / f"{job}.pt", weights_only=False, map_location="cpu"
-        )
-        cands = dict(zip(cache["frame"], cache["boxes"], strict=True))
+        if args.detections is not None:
+            det = pl.read_parquet(args.detections / f"{job}.parquet")
+            cands = {
+                f: [[b[0], b[1] - 0.5 * (b[3] - b[1]), b[2], b[3], *b[4:]] for b in bs]
+                for f, bs in zip(det["frame"], det["boxes"], strict=True)
+            }
+        else:
+            cache = torch.load(
+                args.cache / f"{job}.pt", weights_only=False, map_location="cpu"
+            )
+            cands = dict(zip(cache["frame"], cache["boxes"], strict=True))
         rows = []
         for idx, images in frames(
             D12_ROOT / job / "cam_fork" / "video.mp4", args.stride, 8
@@ -106,6 +125,9 @@ def main() -> None:
                         "frame": f,
                         "box": b[:4],
                         "box_score": b[4],
+                        "p_loaded": b[5]
+                        if len(b) > 5
+                        else None,  # detectors with a load head
                         "kp": kp.tolist(),
                         "conf": cf.tolist(),
                         "conf_mean": float(cf.mean()),

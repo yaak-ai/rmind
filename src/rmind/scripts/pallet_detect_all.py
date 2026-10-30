@@ -2,7 +2,7 @@
 
 Every `--stride`-th frame: frozen policy DINOv3 ViT-S at the head's resolution -> every
 pallet box with score >= `--threshold`. Writes one parquet per job: frame, boxes
-(x0, y0, x1, y1, score in full-res pixels). Input for pre-labelling and for tracking.
+(x0, y0, x1, y1, score in full-res pixels, then P(loaded) for heads that predict it). Input for pre-labelling and for tracking.
 """
 
 import argparse
@@ -16,7 +16,7 @@ from rmind.components.timm_backbone import TimmBackbone
 from rmind.scripts.pallet_poc_zeroshot import D12_ROOT
 from rmind.scripts.pallet_predict_entry import frames
 from rmind.scripts.pallet_proposer_head import ENCODER, LAYER, MEAN, STD
-from rmind.scripts.pallet_proposer_multi import Head, decode
+from rmind.scripts.pallet_proposer_multi import decode, make_head
 
 
 def main() -> None:
@@ -33,8 +33,7 @@ def main() -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     ck = torch.load(args.head, map_location="cpu", weights_only=False)
     res = tuple(ck["res"])
-    head = Head().to(args.device).eval()
-    head.load_state_dict(ck["state_dict"])
+    head = make_head(ck["state_dict"]).to(args.device).eval()
     enc = (
         TimmBackbone(ENCODER, out_indices=[LAYER], img_size=[res[1], res[0]])
         .to(args.device)
@@ -67,7 +66,7 @@ def main() -> None:
             )
             with torch.no_grad():
                 dets = decode(
-                    *head(enc((x - MEAN.to(args.device)) / STD.to(args.device))),
+                    head(enc((x - MEAN.to(args.device)) / STD.to(args.device))),
                     args.threshold,
                 )
             rows += [

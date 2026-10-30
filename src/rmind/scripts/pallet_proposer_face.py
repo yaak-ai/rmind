@@ -148,7 +148,7 @@ def main() -> None:
     parser.add_argument(
         "--cache",
         type=Path,
-        default=Path("/nasa/data/d12/yaak/pallet-proposer-20261027-ab/cache"),
+        default=Path("/nasa/team-space/nikita/pallet-detector-ab/proposer-cache-20261027/cache"),
     )
     parser.add_argument("--pred", type=Path, default=WORKSPACE / "predictions/pred_v2")
     parser.add_argument(

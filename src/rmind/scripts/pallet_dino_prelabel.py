@@ -10,7 +10,7 @@
 The box per image comes from Grounding DINO (best-scoring pallet box).
 
     LABEL_STUDIO_TOKEN=... uv run --extra pallet python -m rmind.scripts.pallet_dino_prelabel \
-        --root /nasa/data/d12/yaak/pallet-labels --support-project 4 --tasks .../tasks.json --out .../tasks_dino.json
+        --root /nasa/team-space/nikita/pallet-detector/legacy/pallet-labels --support-project 4 --tasks .../tasks.json --out .../tasks_dino.json
 """
 
 import argparse

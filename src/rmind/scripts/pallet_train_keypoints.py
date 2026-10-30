@@ -10,7 +10,7 @@ on each validation set and keeps the weights best on real val when given, else
 on synthetic val.
 
     CUDA_VISIBLE_DEVICES=1 uv run --extra pallet python -m rmind.scripts.pallet_train_keypoints \
-        --data /nasa/data/d12/yaak/palloc6d/images --out outputs/pallet_kp
+        --data /nasa/team-space/nikita/pallet-detector/datasets/palloc6d/images --out outputs/pallet_kp
 """
 
 import argparse
