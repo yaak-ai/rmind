@@ -63,3 +63,13 @@ class HydraConfig[T](BaseModel):
                 return f"{module}.{qualname}"
 
         return ImportString._serialize(target)  # noqa: SLF001
+
+
+def init_hydra_param[T](
+    hparams: dict[str, Any], name: str, value: "HydraConfig[T] | T"
+) -> T:
+    if isinstance(value, HydraConfig):
+        hparams[name] = value.model_dump()
+        return value.instantiate()
+
+    return value

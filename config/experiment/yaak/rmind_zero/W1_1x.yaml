@@ -1,0 +1,45 @@
+# @package _global_
+# W1 at the half size of run zany-gorge-809 (7eyuo8tg): 32 latent tokens, latent
+# cross-attention 4 layers, world 8, FWD / INV / POLICY decoders 2. W1 itself is the 2x model.
+defaults:
+  - /experiment/yaak/rmind_zero/W1
+  - _self_
+
+model:
+  episode_builder:
+    special_tokens:
+      utility:
+        latent:
+          _args_: [0, 32]
+        inv:
+          _args_: [32, 40]
+        policy:
+          _args_: [40, 48]
+        fwd:
+          _args_: [48, 304]
+        speed:
+          _args_: [304, 305]
+    embeddings:
+      modules:
+        utility:
+          num_embeddings: 305
+  latent:
+    latent:
+      decoder:
+        num_layers: 4
+    world:
+      num_layers: 8
+  objectives:
+    modules:
+      forward_dynamics:
+        decoder:
+          decoder:
+            num_layers: 2
+      inverse_dynamics:
+        decoder:
+          decoder:
+            num_layers: 2
+      policy:
+        decoder:
+          decoder:
+            num_layers: 2

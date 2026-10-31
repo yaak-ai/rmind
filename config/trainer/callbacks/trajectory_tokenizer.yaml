@@ -1,0 +1,12 @@
+- _target_: pytorch_lightning.callbacks.TQDMProgressBar
+- _target_: pytorch_lightning.callbacks.ModelSummary
+  max_depth: 3
+- _target_: pytorch_lightning.callbacks.ModelCheckpoint
+  every_n_epochs: 1
+  save_on_train_epoch_end: True
+- _target_: pytorch_lightning.callbacks.LearningRateMonitor
+  logging_interval: step
+# 32 fixed validation trajectories (by manoeuvre type): ground truth vs reconstruction
+# at every validation run, plus per-type final-pose error
+- _target_: rmind.callbacks.loggers.WandbTrajectoryReconstructionLogger
+  key: val/reconstruction

@@ -1,6 +1,6 @@
 from collections.abc import Callable, Mapping
 from functools import partial
-from typing import Any, final, override
+from typing import Any, Literal, final, override
 
 import torch
 from pydantic import InstanceOf, validate_call
@@ -14,6 +14,7 @@ from torch.utils._pytree import (  # noqa: PLC2701
     tree_map_with_path,
 )
 
+from rmind.components.dead_reckoning import rolling_dead_reckoned_trajectory
 from rmind.utils.functional import diff_last
 from rmind.utils.pytree import key_get_default
 
@@ -443,3 +444,81 @@ class NoEncoder(Module):
     @override
     def forward(self, *_args: Any, **_kwargs: Any) -> None:
         return None
+
+
+@final
+class TrajectoryTarget(Module):
+    """Per-frame future ego trajectory ground truth, dead-reckoned from CAN
+    speed + denoised heading (`rmind.components.dead_reckoning`) for the
+    auxiliary trajectory head (`docs/phase3_trajectory_head_plan.md`).
+
+    Must run on `speed`/`heading`/`time_stamp` while they still span the full
+    flat time axis, i.e. BEFORE `ChunkFields` truncates it to `episode_length`
+    -- the dead-reckoning needs the future steps `ChunkFields` would otherwise
+    drop. `out` must land under an EXISTING top-level key (e.g.
+    `("context", "trajectory_target")`) rather than introduce a new one: the
+    `ModuleDict` stage later in `input_transform` keys its outer broadcast by
+    the top-level names in its own `modules:` mapping, so an unlisted
+    top-level key would break that match. Emits `None` when any input field
+    is absent. With `steering`, the heading is first cleaned with a bicycle model
+    (`rmind.components.dead_reckoning.bicycle_cleaned_heading`).
+    """
+
+    @validate_call
+    def __init__(  # noqa: PLR0913
+        self,
+        *,
+        speed: tuple[str, ...],
+        heading: tuple[str, ...],
+        time_stamp: tuple[str, ...],
+        out: tuple[str, ...],
+        episode_length: int,
+        num_poses: int,
+        steering: tuple[str, ...] | None = None,
+        heading_cleanup: dict[str, float] | None = None,
+        integration: Literal["left", "trapezoid"] = "left",
+    ) -> None:
+        super().__init__()
+
+        self.integration: Literal["left", "trapezoid"] = integration
+
+        self._steering = tuple(map(MappingKey, steering)) if steering else None
+        self.heading_cleanup = heading_cleanup
+        self._speed = tuple(map(MappingKey, speed))
+        self._heading = tuple(map(MappingKey, heading))
+        self._time_stamp = tuple(map(MappingKey, time_stamp))
+        self._out = out
+        self.episode_length = episode_length
+        self.num_poses = num_poses
+
+    @staticmethod
+    def _assoc(tree: Mapping[str, Any], path: tuple[str, ...], value: Any) -> PyTree:
+        key, *rest = path
+        if not rest:
+            return {**tree, key: value}
+        nested = tree.get(key) or {}
+        return {**tree, key: TrajectoryTarget._assoc(nested, tuple(rest), value)}
+
+    @override
+    def forward(self, input: PyTree) -> PyTree:
+        speed = key_get_default(input, self._speed, None)
+        heading = key_get_default(input, self._heading, None)
+        time_stamp = key_get_default(input, self._time_stamp, None)
+
+        if speed is None or heading is None or time_stamp is None:
+            return self._assoc(input, self._out, None)
+
+        steering = (
+            key_get_default(input, self._steering, None) if self._steering else None
+        )
+        trajectory = rolling_dead_reckoned_trajectory(
+            speed_kmh=speed,
+            heading_deg=heading,
+            time_stamp_us=time_stamp,
+            episode_length=self.episode_length,
+            num_poses=self.num_poses,
+            steering=steering,
+            heading_cleanup=self.heading_cleanup,
+            integration=self.integration,
+        )
+        return self._assoc(input, self._out, trajectory)

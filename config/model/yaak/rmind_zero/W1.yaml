@@ -14,19 +14,19 @@ episode_builder:
     utility:
       latent:
         _target_: builtins.range
-        _args_: [0, 32]
+        _args_: [0, 64]
       inv:
         _target_: builtins.range
-        _args_: [32, 40]
+        _args_: [64, 72]
       policy:
         _target_: builtins.range
-        _args_: [40, 48]
+        _args_: [72, 80]
       fwd:
         _target_: builtins.range
-        _args_: [48, 304]
+        _args_: [80, 336]
       speed:  # query of FWD's separate speed decoder
         _target_: builtins.range
-        _args_: [304, 305]
+        _args_: [336, 337]
 
   input_transform:
     _target_: torch.nn.Sequential
@@ -257,7 +257,7 @@ episode_builder:
 
       utility:
         _target_: rmind.components.nn.Embedding
-        num_embeddings: 305
+        num_embeddings: 337
         embedding_dim: ${encoder_embedding_dim}
 
       joint_actions: null
@@ -327,7 +327,7 @@ encoder:
 optimizer:
   _target_: rmind.components.optimizers.SelectiveAdamW
   _recursive_: true
-  lr: 1e-5
+  lr: 1e-4
   betas: [0.9, 0.95]
   weight_decay: 0.1
   weight_decay_module_blacklist:
@@ -340,14 +340,14 @@ lr_scheduler:
   interval: step
   scheduler:
     _target_: rmind.components.lr_schedulers.get_cosine_schedule_with_warmup
-    num_warmup_steps: 100000
-    num_training_steps: 200000
+    num_warmup_steps: 4000
+    num_training_steps: 77000
 
 
 latent:
   _target_: rmind.components.route_latent.RouteWorldLatent
   # q_t = proj(z_q(waypoints_t)): the frozen waypoint tokenizer's latent (4 x 32 RVQ) asks the
-  # current frame's DINO patches; E_t (32 tokens) is the route-guided evidence; W = the
+  # current frame's DINO patches; E_t (64 tokens) is the route-guided evidence; W = the
   # factorized encoder over E (full within a timestep, causal across timesteps). No speed and
   # no actions enter the latent: speed is an INV target, actions are targets / FWD input.
   context_tokenizer:
@@ -368,7 +368,7 @@ latent:
     decoder:
       _target_: rmind.components.transformer.CrossAttentionDecoder
       dim_model: ${image_embedding_dim}
-      num_layers: 2
+      num_layers: 8
       num_heads: 4
       attn_dropout: 0.1
       resid_dropout: 0.1
@@ -382,11 +382,11 @@ latent:
       in_features: ${image_embedding_dim}
       out_features: ${image_embedding_dim}
   world:
-    # factorized encoder over the per-step latents: full attention among the 32 tokens
+    # factorized encoder over the per-step latents: full attention among the 64 tokens
     # within a timestep, causal attention across timesteps (per token, rotary time positions)
     _target_: rmind.components.transformer.TransformerEncoder
     dim_model: ${image_embedding_dim}
-    num_layers: 2
+    num_layers: 16
     num_heads: 4
     attn_dropout: 0.1
     resid_dropout: 0.1
@@ -488,7 +488,7 @@ objectives:
         decoder:
           _target_: rmind.components.transformer.CrossAttentionDecoder
           dim_model: ${image_embedding_dim}
-          num_layers: 2
+          num_layers: 4
           num_heads: 4
           attn_dropout: 0.1
           resid_dropout: 0.1
@@ -525,7 +525,7 @@ objectives:
         decoder:
           _target_: rmind.components.transformer.CrossAttentionDecoder
           dim_model: ${encoder_embedding_dim}
-          num_layers: 2
+          num_layers: 4
           num_heads: 4
           attn_dropout: 0.1
           resid_dropout: 0.1
@@ -572,7 +572,7 @@ objectives:
         decoder:
           _target_: rmind.components.transformer.CrossAttentionDecoder
           dim_model: ${encoder_embedding_dim}
-          num_layers: 2
+          num_layers: 4
           num_heads: 4
           attn_dropout: 0.1
           resid_dropout: 0.1
