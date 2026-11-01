@@ -1,0 +1,53 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm_causal_readout_dropout_depth_anything_v2_r1b_yaw_photo
+  - override /model: yaak/patch_policy/continuation
+  - override /datamodule: yaak/pai
+  - _self_
+
+# Quick finetune of a finished r1b_yaw_photo checkpoint on a 2k-clip
+# PhysicalAI-AV slice (/nasa/drives/pai_sample_2k: 1845 train / 198 val clips,
+# hyperion_8.1, PAI `train` split, every NuRec scene clip excluded; converted
+# by rmind.scripts.pai_convert). Architecture, speed/goal dropout and the input
+# transform come from the CHECKPOINT (load_for_continuation); this arm only sets
+# the data, the optimizer and the loss weights.
+#
+#   just train experiment=yaak/patch_policy/pai_ft \
+#       continuation_artifact=yaak/alex-tmp/model-dfldy2ki:v51
+#
+# PAI has no CAN bus: pedals/steering are placeholder zeros and turn_signal is
+# all "off", so the VQ-BeT action losses and the turn-signal loss are zeroed.
+# Only trajectory_head and mode_head train. The served joint_actions of this
+# finetune are therefore stale (frozen at the checkpoint's heads, but fed a
+# drifting trunk) -- judge it on the trajectory output only.
+#
+# LICENSE (NVIDIA AV Dataset License): results stay internal; no image/video
+# logging (the patch_policy callbacks log scalars only).
+continuation_artifact: ???
+lr: 3e-5
+continuation_loss_weights:
+  action_weight: 0.0
+  turn_signal_weight: 0.0
+
+# Data geometry is experiment-level, not in the checkpoint: restate the
+# source run's CLI overrides (dfldy2ki / celestial-sun-425 ran this arm with
+# episode_length=16 window=2 episode_stride=17, batch 48, lr 2e-4) so the
+# clips match what the trunk was trained on (clip_length 21 = 7 s).
+episode_length: 16
+window: 2
+episode_stride: 17
+
+datamodule:
+  train:
+    batch_size: 48
+  val:
+    batch_size: 48
+
+trainer:
+  # ~880 steps/epoch (1845 clips x ~23 grid clips each / 48)
+  max_epochs: 5
+  val_check_interval: 1.0
+
+wandb:
+  tags: [patch_policy, pai_ft, physicalai_av, continuation]

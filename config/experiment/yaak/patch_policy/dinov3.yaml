@@ -57,6 +57,9 @@ mode_weight: 1.0
 # VQ-BeT action losses (code_*/offset) scale. 1.0 = unchanged; 0.0 drops
 # the action head's gradient for trajectory-only arms (see PatchPolicy).
 action_weight: 1.0
+# turn_signal_head's loss scale. 1.0 = unchanged; 0.0 for data without a
+# turn-signal record (PhysicalAI-AV), whose placeholder labels are all "off".
+turn_signal_weight: 1.0
 
 # frozen encoders
 image_encoder_name: vit_small_patch16_dinov3.lvd1689m
@@ -143,3 +146,4 @@ model:
     hidden_channels: [256, "${num_trajectory_hypotheses}"]
   mode_weight: ${mode_weight}
   action_weight: ${action_weight}
+  turn_signal_weight: ${turn_signal_weight}

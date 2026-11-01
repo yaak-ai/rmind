@@ -20,3 +20,7 @@ optimizer:
       path: torch.nn.LayerNorm
 
 lr_scheduler: null
+
+# null = keep the checkpoint's loss weights; a map overrides the named ones
+# (PatchPolicy.CONTINUATION_LOSS_WEIGHTS), e.g. for data without CAN labels.
+loss_weights: ${oc.select:continuation_loss_weights,null}

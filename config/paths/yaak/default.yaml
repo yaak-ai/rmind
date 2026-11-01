@@ -1,5 +1,6 @@
 ---
 data: /nasa/drives/yaak/data
 alex_data: /nasa/alex/drives/yaak/data
+pai_data: /nasa/drives/pai_sample_2k
 rbyte:
   cache: .rbyte_cache

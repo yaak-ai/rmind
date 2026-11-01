@@ -1,0 +1,392 @@
+#@yaml/text-templated-strings
+
+#! PhysicalAI-AV finetune slice, VAL: 198 clips from held-out chunks [2815, 2848]
+#! (/nasa/drives/pai_sample_2k, converted by rmind.scripts.pai_convert).
+#! Generated from clips.parquet; val grid as the yaak val set.
+
+#@ clips = [
+#@    '04aafbde-01a6-4cf2-903d-07597b030276',
+#@    '0523e087-bbd6-4081-a03c-9eed110439ea',
+#@    '07328f6d-00e7-4b2e-94e9-484ab552dc09',
+#@    '0748e356-29d6-4889-98ae-5e8acc0fa9f9',
+#@    '079988f8-256b-4b0f-981f-1353b68e8ca5',
+#@    '08ca76ac-698e-4ba7-b299-c08da9a7eed4',
+#@    '08e61fd0-fdfb-4981-95e8-07983ee65a96',
+#@    '0ad6e71d-c5b3-454c-93ea-1a5de23d6ebc',
+#@    '0c5fe1e7-3db7-4129-aadb-b809fab04561',
+#@    '0cdbe916-d18c-40a3-840e-c51d19a3a451',
+#@    '0d5bf54b-2055-49c1-90ea-c79e6e3c9b37',
+#@    '0d74ba8e-1f47-49cb-afb7-b40ee01e4ab6',
+#@    '0ee7c300-e822-4faa-bc63-fded82825bc4',
+#@    '0f17658d-da39-4d39-8dee-06f3b453b878',
+#@    '11579573-94d1-4af1-bcee-6099c7c5e660',
+#@    '123ee9a2-c9d5-4574-9bd6-7c0f4f757bc7',
+#@    '166bb98d-49c8-4114-a334-632bc7f4f488',
+#@    '1678d123-54cc-439c-b7aa-2bbab3a4ab0e',
+#@    '16aba26f-e801-469c-b886-9d61d1f0f343',
+#@    '18bcb180-c3d1-437d-b970-72c17a6c48b2',
+#@    '18d85c2c-440c-475c-9dde-41cca939e33f',
+#@    '199910b2-6555-49da-b1d9-c3c31a0680bb',
+#@    '19acfa07-cfca-4343-8982-655fd4a65458',
+#@    '19d56fcf-23d0-4f49-8f71-28a4fcc234dd',
+#@    '1a9c6a6d-ef48-479e-a08e-2dd2055959c7',
+#@    '1c062154-ab70-4223-a7db-f8d42a3bc4fa',
+#@    '1e03e38d-eb82-458e-ad3a-4a771a4c0e24',
+#@    '1e265f3b-deaa-4636-97b0-bb3d6261ba1b',
+#@    '1ed5f5d9-67fc-4d78-8107-d816bc945627',
+#@    '2032729c-d3b4-42b2-be31-d80365389a2d',
+#@    '21e22b4c-dce5-41af-82f6-7e2b036614d8',
+#@    '2279fe4e-b453-4f1d-843a-54866f0da24a',
+#@    '2290dd3f-8fa7-4525-a925-5522c48ad7bc',
+#@    '23b2c061-142b-4818-b2aa-7deb4d6c679e',
+#@    '25614d8d-8b38-4db6-aa8f-782ed65d86e5',
+#@    '26d35adf-a298-491e-aa37-745bd88993a2',
+#@    '2719211b-1370-4e0d-bc4c-4fcd0ef3cee8',
+#@    '27f11ace-d000-4dca-80a6-e9ad6674a6b1',
+#@    '28db7fa9-f0db-4832-acdf-cf49ff324952',
+#@    '2c1cf9a7-ddff-4d02-b185-ae0537b56c44',
+#@    '2d04cdd0-c928-4b05-a1b6-15de3ba4c820',
+#@    '2da9aea4-7bde-46dd-bcfc-e35f7b878c0d',
+#@    '2ede92d9-86df-4fc3-b464-7c42a24f2209',
+#@    '30789bb0-efb3-4a03-b3fe-b9d1ea346bd5',
+#@    '32a0bc8d-5407-447c-b1a7-9ca375ba0bc0',
+#@    '33579bf9-2dab-4408-9345-f32110513297',
+#@    '336c1f49-ec9f-4428-a2ef-89fb8a9621d4',
+#@    '33d51b08-6b5b-41e3-abce-99de370a6474',
+#@    '34e386a5-a08c-4d73-a732-ade401469db1',
+#@    '36233409-19fc-435b-9700-cb89f6e74bca',
+#@    '36c61a73-ea6e-4e96-83c7-89b9c054e120',
+#@    '39ff5149-4860-433b-b28c-ab33b0b70568',
+#@    '3d79200a-dbd3-4a9b-9e9e-9454b17e59fd',
+#@    '3e57aad4-560e-4be6-bd2c-3e6bce22a2b1',
+#@    '3f5fcacd-63ec-4463-9831-61fd1a35e41c',
+#@    '41965ebc-22a3-4987-b8b9-f7d84fb1f9d2',
+#@    '43433330-97f8-419b-927f-9cb3ae8a41f0',
+#@    '434fab4c-d366-4862-b0ff-b1d6b071ec2b',
+#@    '451a9b50-6d73-4bbc-ae90-59bf895875ea',
+#@    '4a0cc63d-d832-4c7d-bcad-794b96cc71e5',
+#@    '4b3f6956-0d3d-4b43-bb88-ff729b8ecff4',
+#@    '4d394b3c-a229-4024-96bb-18c0a5afaeb4',
+#@    '4e094231-0eab-424e-8214-5eec8fcb6935',
+#@    '4ee30ad4-1f82-407e-9b18-cfaab69b72a1',
+#@    '4fee97e2-6c40-4f00-adf9-6dbc135f029d',
+#@    '5065b85e-b9f8-4282-baa6-ee10116efed6',
+#@    '5273a7a6-2396-41d9-a552-6b844d36735e',
+#@    '5378d638-09b6-4e61-af19-632636de53f8',
+#@    '537cc629-1d9b-4a1c-9bfa-4ad69a295f58',
+#@    '54230911-ed77-4116-b058-6c00c481ea4d',
+#@    '543e64a9-121a-4182-9f8d-4233c6ce154d',
+#@    '546d816f-1bba-4510-ae8e-6e5db26325bf',
+#@    '56eddd98-e13e-4c83-95aa-f1c6f15f1b8d',
+#@    '5c1bb243-b607-40fc-8228-a000b2b2d336',
+#@    '5db0b954-8627-461f-8f46-9ceaebd3980a',
+#@    '5e4a2d71-757e-4af7-a436-bad328b00f81',
+#@    '5ebeda8d-7a6e-492b-9b7e-ccfe4a121336',
+#@    '6172d472-38db-4380-b710-9e4ae3a40ac6',
+#@    '620ca0b3-0539-42e6-aa13-bea57f99a397',
+#@    '6a0a3268-f6be-4b8d-9ee0-2f21f4d2aee4',
+#@    '6e2c9ca6-e0ca-4e2f-b6c4-47f5e6082eac',
+#@    '6f3e7bf5-4204-4869-9d94-7072ae753583',
+#@    '7023556c-0e9d-42df-97e2-a1b2fbf36ace',
+#@    '70aea6cc-ef39-4c5e-afb2-95480eb9c781',
+#@    '73ee5bd3-1e72-4e36-bf32-460ac3f0a1d9',
+#@    '741b0bfe-c16c-4e03-a366-db6f493ee744',
+#@    '7566e9dc-6a52-4871-82e3-cf044cf764c4',
+#@    '76470f6b-3fbb-41aa-bb16-4135e0ae7833',
+#@    '7657ce1b-75ea-46c8-8e77-9bfb0dc006fe',
+#@    '77facccf-fd74-4034-88a1-ec6c51fbca6e',
+#@    '78212572-79ed-437d-b39b-9416f92a3071',
+#@    '78f663ed-76a0-4980-bd64-e667669c8f51',
+#@    '7a378885-7a1b-4e7e-9f05-1e4704072816',
+#@    '7b756409-ba6f-404e-9d9c-136a5c3211b1',
+#@    '7c81f3a6-c489-4f08-b324-e6472e006d64',
+#@    '7cba240d-ac1c-4ffe-9f1c-a00fc6fa2551',
+#@    '7d694cfd-e620-433b-9623-3e7b5efbac01',
+#@    '8037af20-075e-4f6b-a7f6-87c66982e7cd',
+#@    '82fa237c-839c-4d6b-b1aa-c8ef31b3f84a',
+#@    '8531e368-fe10-4457-909c-bed2bcf76735',
+#@    '88551cd2-47d7-4cce-b4e8-600003e557e5',
+#@    '887b307b-f97b-45be-a0b3-4911e68864f4',
+#@    '892c9c41-9cb3-4470-a29f-e6232f9c461d',
+#@    '8a4461a8-ce8e-4ca9-89c6-d708ff30a0c2',
+#@    '8ff42b8a-7777-46b5-be63-f5e384ff294a',
+#@    '9012a456-24d8-4bfe-b844-acce258fb17e',
+#@    '91a8934e-3765-4bb2-81db-7b3c8fb357f8',
+#@    '93ff6083-294e-4392-b272-852f8ea36b5a',
+#@    '95ee2592-d592-424b-be26-f1ded3b80be2',
+#@    '998b9384-ca4f-4c52-a6eb-e764e4281c24',
+#@    '9a332416-0f54-49a4-b882-507a3c739991',
+#@    '9a78a20f-0b25-4575-9ca9-82f762af794f',
+#@    '9adaf8b3-9fa9-4ebd-8f56-7ea321ea61d2',
+#@    '9db01da7-f749-45d9-b74b-0fe3ea9273da',
+#@    '9efd2b02-a3b4-4676-bf09-dbe7116b8414',
+#@    '9f448599-c120-455e-9be3-44edeb2a746d',
+#@    '9f76a351-43b6-484e-a74f-7e134c3ce066',
+#@    'a2aec759-ea25-45f9-9e1c-78f9abfb0411',
+#@    'a3b42837-7224-4105-be1a-15c19179c3df',
+#@    'a5de5c5a-a000-4e4a-86c5-fc5262285ba7',
+#@    'a62fed76-968a-4d7d-8f3a-b40f40c91753',
+#@    'a6b0171c-7923-4a27-8117-ce9774c9d1b7',
+#@    'a82ff36b-b035-4c2a-9400-c892eecd23dc',
+#@    'a914afd4-1d25-4d50-84cd-5bab7fa1c503',
+#@    'a9f7ecb4-ad34-4c4a-a89a-f74b1f4bd69f',
+#@    'aab98e58-c890-436b-81c4-642b64bff8a7',
+#@    'ab5badf3-b3d5-4d3d-9350-521d32681209',
+#@    'ac6495a3-97f1-4d0f-b176-f8a4b5104fa3',
+#@    'accc8619-f84f-4e6b-9773-87e93e02d9cb',
+#@    'ae09acbc-abba-4b98-ae67-35ea457b91c9',
+#@    'afe1fc14-5ea8-4f54-ad03-7604c88c684e',
+#@    'b03df257-2397-4b8f-bf1f-1f284ba6fb1d',
+#@    'b056bf5a-231e-40a1-9d6d-0a116f75ff08',
+#@    'b1641e95-242e-46cc-a7c4-266ee29c8556',
+#@    'b251829e-09a6-410a-8222-360aef8a8e7c',
+#@    'b2c2e497-45ac-4994-9c52-d25259e14126',
+#@    'b323c167-c7f7-434f-9dc4-01e09c8f0a60',
+#@    'b9a8b4cd-7d92-47de-89ad-ffd034729dd8',
+#@    'bc482d78-cb3d-4fb4-bf62-853d35130eba',
+#@    'bc873e39-f235-447e-a3c4-1a7d06cc5ba1',
+#@    'bc9505e6-58d4-4686-963a-84145bdd3da0',
+#@    'bd776782-8262-46e7-acf8-f968ad018490',
+#@    'bd7c644c-d546-40c3-bbf0-e5bad9efc8ba',
+#@    'bdb5ad17-5a9b-4b72-b0b5-b1625b7b192d',
+#@    'c2cc85cb-a2ba-4cb3-85d8-876770807d96',
+#@    'c5371e68-a185-46f6-a5d7-0f2d4e2fb27f',
+#@    'c91a9a93-58d9-4434-9346-dc71f80d9f95',
+#@    'cc0f1ce4-f2af-40fb-a0b7-1b577e28a4f9',
+#@    'cd0de5a9-6ba4-4ce9-94b7-0a7022589080',
+#@    'cd3edcd9-e0e1-42f9-a77b-c58583b610aa',
+#@    'cf7f2fcd-430d-4800-822d-c7da3328ffb9',
+#@    'd0ba046c-427b-47e1-8d9b-a15f5c8f73dc',
+#@    'd17c8dfa-266b-4b92-9de7-412c58a8525f',
+#@    'd1bf5c2d-a782-4924-8fc1-9e3f1c6aa5b2',
+#@    'd1d7a617-87b2-4412-9d47-0386e0b92650',
+#@    'd21020a0-bc0d-4c83-91ae-e7a55c31db01',
+#@    'd248e483-d5d2-410a-aa49-6210eedd9cae',
+#@    'd2552e11-dc48-4e46-a54b-2e3599d25d65',
+#@    'd29c8064-bc5d-4178-a948-22c76c09c815',
+#@    'd392a00b-191b-4353-bcec-ec520701b88f',
+#@    'd3e2e660-431f-4d67-b075-d792368db9ae',
+#@    'd4032b66-624d-4725-8bbe-efebf0252879',
+#@    'd5ef95ab-3e52-4549-a17e-278f0820b42b',
+#@    'd8671e05-afc8-4c25-909a-5ac62c81ab19',
+#@    'da244cf6-befc-45bc-b708-570a462ba535',
+#@    'dbc8d70a-0177-4000-8c44-e43474f7831d',
+#@    'dcd1e911-00d0-44ee-92e0-aacbd83ada67',
+#@    'dded8b41-b1a4-486e-b540-d7cbab40ed9c',
+#@    'e23727a7-a725-4c65-8292-67f7b8e2b0b5',
+#@    'e2f2c20a-51d5-4004-897b-4fb24a9f0baf',
+#@    'e3c925fe-4bc1-4a67-ade8-59466db9be3c',
+#@    'e6acdd1d-8cba-439e-8978-9552ded19a11',
+#@    'e7b23654-ab9e-4e52-bfd6-494673cffc25',
+#@    'ea5ed245-2197-445a-88c6-3d6d1d10674d',
+#@    'eb9cb859-96a7-4510-a69f-b5e25afef021',
+#@    'ebdf70ed-7b6a-4259-98b8-71610355cd4c',
+#@    'ec3cc560-a495-4a6f-a9be-7c6c9417f3ee',
+#@    'ec5462ab-b3f1-4598-95cc-1056d060e1ac',
+#@    'eca565b4-5eeb-4602-83d2-7b6bbf5032dc',
+#@    'ed0775ed-66ab-4fab-8dcc-c9360a7b9a5c',
+#@    'ef2c9a2b-8e91-44c5-9e70-4c7488b034bb',
+#@    'f00cd2df-d120-4e37-b8f5-fb890311a5c7',
+#@    'f07da922-9a8e-4173-9d01-b7b4e0ea80e2',
+#@    'f0a7320f-2d20-4a63-bb32-2f68e3708747',
+#@    'f2726d9e-9374-4493-a63c-49c6dbb0632a',
+#@    'f2c32c74-2429-4444-b097-d9b36bafd539',
+#@    'f3adb8ee-70e7-4961-998e-f94600069b94',
+#@    'f4a5bd7f-55e0-486f-bfad-065d4ee63292',
+#@    'f6cd5885-49b8-4846-a39d-a57e5f6804ed',
+#@    'f6f6cd17-c687-42e2-b24e-24046d374c81',
+#@    'f856bd71-c1d1-4f65-b93f-628503d26bb0',
+#@    'f9976458-9bb8-47b5-a7c0-c1a9239840c2',
+#@    'fbfab0bb-e29a-4b81-80a8-026e9a1fb243',
+#@    'fd5de297-ce8b-4f32-b779-1b6a9dfb534c',
+#@    'fd943da0-d4eb-48ae-928c-3c49acea6d46',
+#@    'fe707cbe-078e-4001-bd3a-0a9f87e38987',
+#@    'ff852a1c-35cb-4020-93c2-af3e27c2d02b',
+#@    'ffccef45-7a09-4e6d-8c4c-d25b69f5d7a0',
+#@ ]
+---
+_target_: rbyte.Dataset.from_config
+_recursive_: false
+_convert_: all
+streams:
+  cam_front_left:
+    index: meta/ImageMetadata.cam_front_left/frame_idx
+    sources:
+      #@ for/end clip_id in clips:
+      (@=clip_id@):
+        _target_: rmind.io.ConcurrentPathTensorSource
+        path: "${paths.pai_data}/clips/(@=clip_id@)/frames/cam_front_left/576x324/{:09d}.jpg"
+        decoder:
+          _target_: simplejpeg.decode_jpeg
+          _partial_: true
+          colorspace: rgb
+          fastdct: true
+          fastupsample: true
+
+samples:
+  inputs:
+    input_id:
+      #@ for/end clip_id in clips:
+      - (@=clip_id@)
+
+    meta_path:
+      #@ for/end clip_id in clips:
+      - ${paths.pai_data}/clips/(@=clip_id@)/meta.parquet
+
+    cam_front_left_path:
+      #@ for/end clip_id in clips:
+      - ${paths.pai_data}/clips/(@=clip_id@)/frames/cam_front_left/576x324
+
+  executor:
+    _target_: concurrent.futures.ProcessPoolExecutor
+    mp_context:
+      _target_: multiprocessing.get_context
+      method: forkserver
+
+  storage: file_array
+  run_folder: "${paths.rbyte.cache}/pai/val/clip${clip_length}/stride${oc.select:val_episode_stride,${episode_stride}}-off0/samples"
+  scheduling_strategy: eager
+  return_results: false
+  persist_memory: false
+
+  pipeline:
+    _target_: pipefunc.Pipeline
+    validate_type_annotations: false
+    cache_type: disk
+    cache_kwargs:
+      cache_dir: ${paths.rbyte.cache}
+    functions:
+      - _target_: pipefunc.PipeFunc
+        output_name: meta
+        mapspec: "meta_path[i] -> meta[i]"
+        func:
+          _target_: makefun.create_function
+          func_signature: "build_meta(*, meta_path)"
+          func_impl:
+            _target_: rbyte.io.DuckDBDataFrameQuery
+            query: |
+              SELECT * FROM read_parquet($meta_path)
+
+      - _target_: pipefunc.PipeFunc
+        renames:
+          path: cam_front_left_path
+        output_name: cam_front_left_meta
+        mapspec: "cam_front_left_path[i] -> cam_front_left_meta[i]"
+        cache: true
+        func:
+          _target_: rbyte.io.PathDataFrameBuilder
+          pattern: (?<frame_idx>\d+).jpg
+          fields:
+            frame_idx:
+              _target_: polars.Int32
+
+      # meta.parquet already carries the yaak column names and conventions
+      # (rmind.scripts.pai_convert): only filter, drop the converter's own
+      # column, and apply the same clip-grid phase shift as the yaak train set.
+      - _target_: pipefunc.PipeFunc
+        output_name: filtered
+        mapspec: "meta[i], cam_front_left_meta[i] -> filtered[i]"
+        func:
+          _target_: makefun.create_function
+          func_signature: "filter(*, meta, cam_front_left_meta)"
+          func_impl:
+            _target_: rbyte.io.DuckDBDataFrameQuery
+            query: |
+              WITH
+                clip_grid AS (
+                  SELECT
+                    * EXCLUDE ("pai/waypoints_extrapolated_m")
+                  FROM
+                    meta
+                    SEMI JOIN cam_front_left_meta
+                    ON meta."meta/ImageMetadata.cam_front_left/frame_idx"
+                    = cam_front_left_meta.frame_idx
+                  WHERE
+                    meta."meta/VehicleMotion/speed" BETWEEN 0.0 AND 130.0
+                    -- waypoints past the last egomotion pose are a straight
+                    -- extension, not the driven route
+                    AND meta."pai/waypoints_extrapolated_m" <= ${oc.select:pai_max_extrapolated_m,30.0}
+                    AND COLUMNS(*) IS NOT NULL
+                )
+              SELECT
+                *
+              FROM
+                clip_grid
+              WHERE
+                "meta/ImageMetadata.cam_front_left/frame_idx" >= (
+                  SELECT
+                    MIN("meta/ImageMetadata.cam_front_left/frame_idx") + 0
+                  FROM
+                    clip_grid
+                )
+              ORDER BY
+                "meta/ImageMetadata.cam_front_left/time_stamp";
+
+      - _target_: pipefunc.PipeFunc
+        renames:
+          input: filtered
+        output_name: samples
+        mapspec: "filtered[i] -> samples[i]"
+        func:
+          _target_: rbyte.io.DataFrameGroupByDynamic
+          index_column: meta/ImageMetadata.cam_front_left/frame_idx
+          every: "${oc.select:val_episode_stride,${episode_stride}}i"
+          period: ${clip_period}
+          closed: left
+          gather_every: ${episode_step}
+
+      - _target_: pipefunc.PipeFunc
+        output_name: samples_cast
+        mapspec: "samples[i] -> samples_cast[i]"
+        func:
+          _target_: makefun.create_function
+          func_signature: "cast(*, samples)"
+          func_impl:
+            _target_: rbyte.io.DuckDBDataFrameQuery
+            query: |
+              SELECT
+                  "meta/ImageMetadata.cam_front_left/time_stamp"[1:${clip_length}]::TIMESTAMP[${clip_length}] AS "meta/ImageMetadata.cam_front_left/time_stamp",
+                  "meta/ImageMetadata.cam_front_left/frame_idx"[1:${clip_length}]::INT32[${clip_length}] AS "meta/ImageMetadata.cam_front_left/frame_idx",
+                  "meta/VehicleMotion/speed"[1:${clip_length}]::FLOAT[${clip_length}] AS "meta/VehicleMotion/speed",
+                  "headings_denoised/heading"[1:${clip_length}]::FLOAT[${clip_length}] AS "headings_denoised/heading",
+                  "meta/Gnss/xy"[1:${clip_length}]::FLOAT[2][${clip_length}] AS "meta/Gnss/xy",
+                  "waypoints/xy_normalized"[1:${clip_length}]::FLOAT[2][10][${clip_length}] AS "waypoints/xy_normalized",
+                  "waypoints/xy"[1:${clip_length}]::FLOAT[2][10][${clip_length}] AS "waypoints/xy",
+                  "meta/VehicleMotion/gas_pedal_normalized"[1:${clip_length}]::FLOAT[${clip_length}] AS "meta/VehicleMotion/gas_pedal_normalized",
+                  "meta/VehicleMotion/brake_pedal_normalized"[1:${clip_length}]::FLOAT[${clip_length}] AS "meta/VehicleMotion/brake_pedal_normalized",
+                  "meta/VehicleMotion/steering_angle_normalized"[1:${clip_length}]::FLOAT[${clip_length}] AS "meta/VehicleMotion/steering_angle_normalized",
+                  "meta/VehicleState/turn_signal"[1:${clip_length}]::BIGINT[${clip_length}] AS "meta/VehicleState/turn_signal",
+              FROM
+                  samples
+              WHERE
+                  len("meta/ImageMetadata.cam_front_left/frame_idx") = ${clip_length}
+                  AND list_last("meta/ImageMetadata.cam_front_left/frame_idx") - list_first("meta/ImageMetadata.cam_front_left/frame_idx") == (${clip_length} - 1) * ${episode_step}
+                  -- strictly positive, bounded steps (same guard as the yaak sets)
+                  AND len(list_filter(
+                      list_transform(
+                          list_zip(
+                              "meta/ImageMetadata.cam_front_left/time_stamp",
+                              "meta/ImageMetadata.cam_front_left/time_stamp"[2:]
+                          ),
+                          x -> date_diff('millisecond', x[1], x[2])
+                      ),
+                      dt -> dt <= 0 OR dt > ${oc.select:max_frame_gap_ms,1000}
+                  )) = 0
+
+      - _target_: pipefunc.PipeFunc
+        renames:
+          keys: input_id
+          values: samples_cast
+        output_name: samples_aggregated
+        func:
+          _target_: rbyte.io.DataFrameConcater
+          key_column: input_id
+
+      - _target_: pipefunc.PipeFunc
+        output_name: samples_with_id
+        renames:
+          self: samples_aggregated
+        func:
+          _target_: polars.DataFrame.with_row_index
+          _partial_: true
+          name: meta/sample_id

@@ -262,6 +262,12 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     on shifted clips. `turn_signal` is unaffected. The served `joint_actions`
     then come from untrained heads; only the trajectory output is meaningful.
 
+    `turn_signal_weight` (default `1.0`, the unweighted behaviour) scales
+    `losses["turn_signal"]` the same way. `0.0` keeps `turn_signal_head` and
+    its diagnostics but sends it no gradient -- for data with no turn-signal
+    record (PhysicalAI-AV), where the placeholder all-"off" labels would
+    otherwise teach the head never to signal.
+
     `counterfactual_val_frames` (opt-in, `0` = off; requires `trajectory_head`):
     on about that many validation clips (newest frame of each, batches taken at
     a fixed stride across the val set), rerun the trunk and heads with the
@@ -277,6 +283,12 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     _TURN_SIGNAL_CLASSES: ClassVar[int] = 3  # OFF, LEFT, RIGHT
     _GOAL_PROBE_MIN_SPEED_KMH: ClassVar[float] = 5.0
     _STOPPED_MAX_SPEED_KMH: ClassVar[float] = 1.0
+    CONTINUATION_LOSS_WEIGHTS: ClassVar[tuple[str, ...]] = (
+        "trajectory_weight",
+        "mode_weight",
+        "action_weight",
+        "turn_signal_weight",
+    )
 
     @validate_call
     def __init__(  # noqa: C901, PLR0912, PLR0913, PLR0915
@@ -320,6 +332,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         trajectory_weight: float = 0.0,
         mode_weight: float = 1.0,
         action_weight: float = 1.0,
+        turn_signal_weight: float = 1.0,
         counterfactual_val_frames: Annotated[int, Field(ge=0)] = 0,
         sample_codes: bool = True,
         teacher_force_offset: bool = True,
@@ -442,6 +455,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.trajectory_weight = trajectory_weight
         self.mode_weight = mode_weight
         self.action_weight = action_weight
+        self.turn_signal_weight = turn_signal_weight
         self.sample_codes = sample_codes
         self.teacher_force_offset = teacher_force_offset
         self.offset_scale = offset_scale
@@ -491,6 +505,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "trajectory_weight": trajectory_weight,
             "mode_weight": mode_weight,
             "action_weight": action_weight,
+            "turn_signal_weight": turn_signal_weight,
             "counterfactual_val_frames": counterfactual_val_frames,
             "sample_codes": sample_codes,
             "teacher_force_offset": teacher_force_offset,
@@ -1186,7 +1201,9 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         if self.turn_signal_head is not None:
             turn_signal_target = turn_signal_chunk["turn_signal"].long()  # (b, t, h)
             turn_signal_logits = self._turn_signal_logits(features)  # (b, t, h, 3)
-            losses["turn_signal"] = self.losses["turn_signal"](
+            losses["turn_signal"] = self.turn_signal_weight * self.losses[
+                "turn_signal"
+            ](
                 rearrange(turn_signal_logits, "b t h k -> (b t h) k"),
                 rearrange(turn_signal_target, "b t h -> (b t h)"),
             )
@@ -1554,6 +1571,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         *,
         optimizer: Any,
         lr_scheduler: Any | None = None,
+        loss_weights: Mapping[str, float] | None = None,
         **_ignored: Any,
     ) -> "PatchPolicy":
         """Warm-start continuation training from a finished run's checkpoint.
@@ -1563,6 +1581,15 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         the given LR/schedule. `lr_scheduler=None` -> constant LR, no warmup.
         The replacement is written back into `hparams` so checkpoints saved by
         the continuation run reload with the continuation settings.
+
+        `loss_weights` (`None` = keep the checkpoint's) overrides any of
+        `CONTINUATION_LOSS_WEIGHTS` -- e.g. zeroing `action_weight` and
+        `turn_signal_weight` to continue on data without CAN labels. Like the
+        optimizer, the new values are written back into `hparams`.
+
+        Raises:
+            ValueError: if `loss_weights` names a key outside
+                `CONTINUATION_LOSS_WEIGHTS`.
 
         `**_ignored` swallows architecture keys that parent experiments inline
         under `model.*` (e.g. dinov2_dinowm's `image_encoder`): on continuation
@@ -1580,6 +1607,12 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         )
         model.optimizer = optimizer
         model.lr_scheduler = lr_scheduler
+        for key, value in (loss_weights or {}).items():
+            if key not in cls.CONTINUATION_LOSS_WEIGHTS:
+                msg = f"loss_weights key {key!r} not in {cls.CONTINUATION_LOSS_WEIGHTS}"
+                raise ValueError(msg)
+            setattr(model, key, float(value))
+            model.hparams[key] = float(value)
         model.hparams["optimizer"] = optimizer.model_dump()
         model.hparams["lr_scheduler"] = (
             lr_scheduler.model_dump() if lr_scheduler is not None else None

@@ -1458,6 +1458,40 @@ def test_action_weight_scales_the_action_losses() -> None:
     )
 
 
+def test_turn_signal_weight_scales_the_turn_signal_loss() -> None:
+    """`turn_signal_weight` scales `losses["turn_signal"]` linearly and leaves
+    the other losses alone; `0.0` leaves turn_signal_head with no gradient.
+    """
+    model = _make_model(turn_signal_head=True)
+    model.eval()  # no trunk dropout, so repeated calls match
+    batch = _make_batch(turn_signal_head=True)
+
+    def losses() -> dict[str, Tensor]:
+        metrics = model._compute_metrics(batch)  # noqa: SLF001
+        return dict(cast("dict[str, Tensor]", metrics["policy", "loss"]).items())
+
+    unweighted = losses()
+    assert "turn_signal" in unweighted
+
+    model.turn_signal_weight = 0.25
+    weighted = losses()
+    assert weighted.keys() == unweighted.keys()
+    for key, value in weighted.items():
+        expected = 0.25 * unweighted[key] if key == "turn_signal" else unweighted[key]
+        torch.testing.assert_close(value, expected)
+
+    model.turn_signal_weight = 0.0
+    model.zero_grad()
+    metrics = model._compute_metrics(batch)  # noqa: SLF001
+    total = cast("TensorDict", metrics["policy", "loss"]).sum(reduce=True)
+    cast("Tensor", total).backward()
+    assert model.turn_signal_head is not None
+    assert all(
+        p.grad is None or p.grad.abs().sum() == 0
+        for p in model.turn_signal_head.parameters()
+    )
+
+
 def test_mode_weight_scales_the_mode_loss() -> None:
     """`mode_weight` scales `losses["mode"]` linearly, and `0.0` zeroes both
     the term and mode_head's gradient while leaving `mode_accuracy` (a
@@ -1716,3 +1750,30 @@ def test_counterfactual_probes_keep_the_batch_shape() -> None:
     probe_reruns = len(("left route", "right route", "speed probe"))
     assert len(shapes) == probe_reruns
     assert {shape[0] for shape in shapes} == {BATCH_SIZE}
+
+
+def test_continuation_overrides_only_the_named_loss_weights(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`load_for_continuation(loss_weights=...)` replaces the named weights on
+    the model and in `hparams`, keeps the checkpoint's others, and rejects
+    unknown keys.
+    """
+    optimizer = {"_target_": "torch.optim.AdamW", "_partial_": True, "lr": 3e-5}
+
+    def load(**loss_weights: float) -> PatchPolicy:
+        source = _make_model(turn_signal_head=True, mode_weight=0.5)
+        monkeypatch.setattr(
+            PatchPolicy, "load_from_wandb_artifact", lambda *_a, **_k: source
+        )
+        return PatchPolicy.load_for_continuation(
+            "entity/project/model-x:v0", optimizer=optimizer, loss_weights=loss_weights
+        )
+
+    model = load(action_weight=0.0, turn_signal_weight=0.0)
+    for key in ("action_weight", "turn_signal_weight"):
+        assert getattr(model, key) == model.hparams[key] == pytest.approx(0.0)
+    assert model.mode_weight == pytest.approx(0.5)  # untouched
+
+    with pytest.raises(ValueError, match="loss_weights key"):
+        load(speed_dropout=0.0)
