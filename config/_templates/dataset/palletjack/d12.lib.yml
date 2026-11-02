@@ -144,6 +144,8 @@ samples:
           traction_source: command
           max_skew_s: 1.0
           include_fork_height: "${oc.select:include_fork_height,false}"
+          # the pick-up target from the camera (`scripts.pallet_vision_target`); null = off
+          vision_target_dir: "${oc.select:vision_target_dir,null}"
 
       # 2. the intention transform, in the config just like the car waypoints:
       # translate each target by -ego, rotate by -heading into the vehicle frame,

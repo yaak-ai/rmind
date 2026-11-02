@@ -1,0 +1,47 @@
+# @package _global_
+# d12_fm with the pick-up target from the CAMERA instead of the UWB pallet tag.
+#
+# `relative_ego_pos` keeps its token slot but reads `vision_target`: the target pallet's
+# entry-face centre in the robot frame from the keypoint pose, [x/10, y/10, valid]
+# (`scripts.pallet_vision_target`; target = the pallet picked up next, from the
+# fork-lift pickups). It is valid only on the approach to a pickup; elsewhere
+# [0, 0, 0]. The dropoff token stays UWB-based. Compare with d12_fm on the same jobs.
+defaults:
+  - /experiment/palletjack/patch_policy/d12_fm
+  - _self_
+
+vision_target_dir: /nasa/team-space/nikita/pallet-detector/labels/vision_target_v1
+
+observation_embeddings:
+  relative_ego_pos:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: rmind.components.nn.Linear
+        in_features: 3
+        out_features: ${policy_embedding_dim}
+      - _target_: einops.layers.torch.Rearrange
+        pattern: "b t d -> b t 1 d"
+
+model:
+  input_transform:
+    _args_:
+      - _target_: rmind.components.nn.Remapper
+        paths:
+          image: ${image_remap}
+          continuous:
+            speed: [data, speed]
+            fork_above_300: [data, fork_above_300]
+            fork_height: [data, fork_height]
+            relative_ego_pos: [data, vision_target]
+            relative_dropoff_pos: [data, relative_dropoff_pos]
+            traction: [data, traction]
+            steering: [data, steering]
+            fork1: [data, fork1]
+      - _target_: rmind.components.containers.ModuleDict
+        modules:
+          image: ${image_transform}
+          continuous:
+            _target_: rmind.components.nn.AtLeast3D
+
+wandb:
+  tags: [palletjack, d12, patch_policy, flow_matching, end2end, three_cameras, fork_height, vision_target]

@@ -181,6 +181,14 @@ POSITIONS: Final = ("relative_ego_pos", "relative_dropoff_pos")
 # separate tokens; the dataset config builds it when the experiment wants it
 GOAL: Final = "goal"
 
+# optional: the pick-up target from the camera instead of the UWB tag
+# (`scripts.pallet_vision_target`), [x/10, y/10, valid] in the robot frame (x towards
+# the fork tips, y left, origin at the fork base), for an experiment that feeds it in
+# place of `relative_ego_pos`
+VISION_TARGET: Final = "vision_target"
+# detection steps are every 5th frame; interpolate across at most this many frames
+VISION_TARGET_MAX_GAP: Final = 15
+
 # the policy's targets - the columns that become action chunks
 ACTIONS: Final = ("traction", "steering", "fork1")
 
@@ -268,6 +276,7 @@ def row_table(
     traction_source: str,
     max_skew_s: float,
     include_fork_height: bool = False,
+    vision_target_dir: Path | None = None,
 ) -> pl.DataFrame:
     """One row per reference-camera frame: frame indices, signals, WORLD positions.
 
@@ -335,6 +344,15 @@ def row_table(
     table = _world_positions(table, topics, job_dir)
     if include_fork_height:
         table = join_fork_height(table, read_fork_height(job_dir))
+    if vision_target_dir is not None:
+        frames = (
+            table["frame_idx"]
+            if reference == "cam_fork"
+            else table["cam_fork/frame_idx"]
+        )
+        table = table.with_columns(
+            vision_target_column(frames, vision_target_dir / f"{job_dir.name}.parquet")
+        )
 
     return _drop_invalid(table, validity).rename({
         "frame_idx": f"{reference}/frame_idx"
@@ -396,6 +414,40 @@ def join_fork_height(table: pl.DataFrame, height: pl.DataFrame | None) -> pl.Dat
             valid.cast(pl.Float32),
         ).alias("fork_height")
     ).drop("height_m", "sigma_m", "valid")
+
+
+def vision_target_column(frames: pl.Series, path: Path) -> pl.Series:
+    """Per cam_fork frame: [x/10, y/10, 1] of the vision target, [0, 0, 0] where none.
+
+    The target rows are every 5th frame of each pickup's approach, up to its pickup
+    frame; positions are interpolated linearly between rows at most
+    `VISION_TARGET_MAX_GAP` frames apart. Frames outside every approach (driving with
+    the pallet, after the last pickup, gaps where the keypoints did not fit) are not
+    valid. A recording without a target file has no valid frame.
+    """
+    f = frames.cast(pl.Int64).to_numpy()
+    x, y, valid = np.zeros(len(f)), np.zeros(len(f)), np.zeros(len(f), dtype=bool)
+    if path.is_file():
+        rows = pl.read_parquet(path).sort("frame")
+        for (_,), g in rows.group_by("pickup"):
+            g = g.sort("frame")  # ruff: ignore[redefined-loop-name]
+            gf = g["frame"].to_numpy()
+            # stop at the pickup frame; split where the gap between rows is too long
+            inside = (f >= gf[0]) & (f <= min(gf[-1], g["pickup_frame"][0]))
+            nxt = np.searchsorted(gf, f, side="left").clip(1, len(gf) - 1)
+            gap = gf[nxt] - gf[nxt - 1]
+            ok = inside & ((gap <= VISION_TARGET_MAX_GAP) | np.isin(f, gf))
+            x = np.where(ok, np.interp(f, gf, g["x_m"].to_numpy()), x)
+            y = np.where(ok, np.interp(f, gf, g["y_m"].to_numpy()), y)
+            valid |= ok
+    return pl.Series(
+        VISION_TARGET,
+        np.stack(
+            [np.clip(x / 10.0, -1, 1), np.clip(y / 10.0, -1, 1), valid.astype(float)],
+            axis=1,
+        ).tolist(),
+        pl.List(pl.Float32()),
+    )
 
 
 def _read_dropoff(job_dir: Path) -> pl.DataFrame:
@@ -566,7 +618,11 @@ def episodes(  # ruff: ignore[too-many-arguments]
         name for name in SIGNALS if name not in ACTIONS or horizon == 1
     ]
     chunked = list(ACTIONS) if horizon > 1 else []
-    lists = [c for c in (*POSITIONS, GOAL, "fork_height") if c in table.columns]
+    lists = [
+        c
+        for c in (*POSITIONS, GOAL, "fork_height", VISION_TARGET)
+        if c in table.columns
+    ]
 
     def gather(column: str, n: int) -> np.ndarray:
         values = table[column]
@@ -615,7 +671,7 @@ class D12RowTableBuilder:
     """
 
     @validate_call
-    def __init__(
+    def __init__(  # ruff: ignore[too-many-arguments]
         self,
         *,
         cameras: tuple[str, ...],
@@ -623,6 +679,7 @@ class D12RowTableBuilder:
         traction_source: str = "command",
         max_skew_s: float = 1.0,
         include_fork_height: bool = False,
+        vision_target_dir: Path | None = None,
     ) -> None:
         if reference not in cameras:
             msg = f"reference {reference!r} not in cameras {cameras}"
@@ -636,6 +693,7 @@ class D12RowTableBuilder:
         self._traction_source = traction_source
         self._max_skew_s = max_skew_s
         self._include_fork_height = include_fork_height
+        self._vision_target_dir = vision_target_dir
 
     @validate_call
     def __call__(self, *, job_dir: Path) -> pl.DataFrame:
@@ -646,6 +704,7 @@ class D12RowTableBuilder:
             traction_source=self._traction_source,
             max_skew_s=self._max_skew_s,
             include_fork_height=self._include_fork_height,
+            vision_target_dir=self._vision_target_dir,
         ).with_columns(pl.lit(job_dir.name).alias("input_id"))
 
         logger.info(

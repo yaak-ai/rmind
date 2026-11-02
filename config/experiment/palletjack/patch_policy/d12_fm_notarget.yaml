@@ -1,0 +1,11 @@
+# @package _global_
+# d12_fm_vision with NO pick-up target: the target token is [0, 0, 0] on every frame
+# (an empty target directory). Measures how much the policy relies on the target at all.
+defaults:
+  - /experiment/palletjack/patch_policy/d12_fm_vision
+  - _self_
+
+vision_target_dir: /nasa/team-space/nikita/pallet-detector/labels/vision_target_none
+
+wandb:
+  tags: [palletjack, d12, patch_policy, flow_matching, end2end, three_cameras, fork_height, no_target]

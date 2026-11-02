@@ -30,6 +30,11 @@ def main() -> None:
         "--sampling", choices=("uniform", "balanced"), default="uniform"
     )
     parser.add_argument("--steering-weight", type=float, default=1.0)
+    parser.add_argument(
+        "--experiment",
+        default="palletjack/patch_policy/d12_fm",
+        help="e.g. palletjack/patch_policy/d12_fm_vision (pick-up target from the camera)",
+    )
     arguments = parser.parse_args()
     directory = arguments.run_dir.resolve()
     source = Path(__file__).resolve().parents[3]
@@ -44,7 +49,7 @@ def main() -> None:
         config = compose(
             config_name="train",
             overrides=[
-                "experiment=palletjack/patch_policy/d12_fm",
+                f"experiment={arguments.experiment}",
                 f"action_horizon={audit['action_horizon']}",
                 f"action_mean={list(statistics.action_mean)}",
                 f"action_std={list(statistics.action_std)}",
@@ -134,11 +139,18 @@ def main() -> None:
         )
         return
     OmegaConf.save(config, directory / "resolved.yaml", resolve=True)
-    paths = subprocess.check_output(
-        ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
-        cwd=source,
-        text=True,
-    ).splitlines()
+    try:
+        paths = subprocess.check_output(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+            cwd=source,
+            text=True,
+        ).splitlines()
+    except subprocess.CalledProcessError:  # a copied checkout without .git
+        paths = [
+            str(p.relative_to(source))
+            for pattern in ("src/**/*.py", "config/**/*.yaml", "config/**/*.yml")
+            for p in source.glob(pattern)
+        ]
     with tarfile.open(directory / "source.tar.gz", "w:gz") as archive:
         for path in paths:
             if (source / path).is_file():

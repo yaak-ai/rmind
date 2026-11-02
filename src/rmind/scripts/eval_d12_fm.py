@@ -143,7 +143,9 @@ def load_tokens(policy, job, sample, positions, device, image_intervention=None)
         data[camera] = (
             torch.from_numpy(np.ascontiguousarray(images)).unsqueeze(0).to(device)
         )
-    for name in ("speed", *policy.observations):
+    # plus columns an observation is remapped from (d12_fm_vision: relative_ego_pos <- vision_target)
+    extra = [name for name in ("vision_target",) if name in sample]
+    for name in ("speed", *policy.observations, *extra):
         data[name] = torch.tensor(
             [sample[name][position] for position in positions],
             dtype=torch.float32,
