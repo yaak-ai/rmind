@@ -139,6 +139,10 @@ class PalletKeypointNet(nn.Module):
 
     def forward(self, images: Tensor) -> Tensor:
         """`(B, 3, S, S)` normalised crops -> `(B, K, S/4, S/4)` heatmaps."""
+        return self.head(self.fuse(images)[0])
+
+    def fuse(self, images: Tensor) -> tuple[Tensor, list[Tensor]]:
+        """The stride-4 feature map the heads read, and the backbone's pyramid."""
         features = self.backbone(images)
         if self.vit:
             x = sum(
@@ -160,7 +164,7 @@ class PalletKeypointNet(nn.Module):
                     x, size=feature.shape[-2:], mode="bilinear", align_corners=False
                 )
                 x += lateral(feature)
-        return self.head(self.smooth(x))
+        return self.smooth(x), features
 
 
 def gaussian_targets(

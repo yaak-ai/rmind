@@ -96,7 +96,7 @@ class EntryKeypoints(Dataset):
     def __len__(self) -> int:
         return len(self.items)
 
-    def __getitem__(self, i: int) -> dict[str, torch.Tensor]:
+    def __getitem__(self, i: int) -> dict[str, torch.Tensor]:  # ruff: ignore[too-many-locals]
         from PIL import Image  # ruff: ignore[import-outside-top-level]
 
         name, xy, labelled, det_box = self.items[i]
@@ -115,7 +115,8 @@ class EntryKeypoints(Dataset):
         label_box = np.r_[pts.min(axis=0), pts.max(axis=0)]
         use_det = det_box is not None and (not self.train or self.rng.random() < 0.5)  # ruff: ignore[magic-value-comparison]
         box = np.asarray(det_box, dtype=np.float64) if use_det else label_box
-        if self.train and self.rng.random() < 0.5:  # ruff: ignore[magic-value-comparison]
+        flipped = bool(self.train and self.rng.random() < 0.5)  # ruff: ignore[magic-value-comparison]
+        if flipped:
             image = image.flip(-1)
             xy[:, 0] = WIDTH - 1 - xy[:, 0]
             xy, labelled = xy[list(FLIP_INDEX)], labelled[list(FLIP_INDEX)]
@@ -148,4 +149,7 @@ class EntryKeypoints(Dataset):
             "labelled": torch.from_numpy(labelled),
             "targets": gaussian_targets(local[None], visible[None])[0],
             "scale": torch.tensor(crop.side / CROP_SIZE),
+            # the crop in (possibly flipped) frame pixels, for heads that need its geometry
+            "crop": torch.tensor([crop.x0, crop.y0, crop.side], dtype=torch.float64),
+            "flipped": torch.tensor(flipped),
         }

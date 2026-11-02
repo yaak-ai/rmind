@@ -13,6 +13,11 @@ Writes into `--out`:
     images/rgb_NNNN.jpg
     multi_{train,test}.json          {abs image: [{box, load, floor, unsure, type, id}]}
     entry_{train,test}.json          {abs image#sI: {keypoint: [u, v]}} + .boxes.json + .load.json
+    entry_{train,test}.pose.json     {abs image#sI: metric pose, type, model, layout} (see `pose_record`)
+
+`--labels-out DIR` writes the label JSONs into DIR instead and no images (keys still name the
+JPEGs under `--out`, which must exist): pose for an existing conversion, or a variant with other
+thresholds, without touching it.
 """
 
 import argparse
@@ -25,6 +30,51 @@ from structlog import get_logger
 
 logger = get_logger(__name__)
 SCALE = 1.5  # 1280x720 -> 1920x1080
+OUTER_CORNERS = (
+    "pallet_bottom_left",
+    "pallet_bottom_right",
+    "pallet_top_left",
+    "pallet_top_right",
+)
+
+
+def pose_record(pallet: dict, frame: dict, camera: dict) -> dict:
+    """Metric ground truth of one pallet, camera frame (x forward, y left, z up; m).
+
+    `centre_m` is the entry-face centre (mean of the four outer face corners), `yaw_deg` the
+    heading of the inward face normal (+ left, 0 = square-on). `points_m` are all 12 entry
+    keypoints in the camera frame (amodal), `layout_m` the same points in the pallet's own
+    frame (origin at the entry-face centre, x inward, y left, z up): the model's exact 3D
+    keypoint layout, for PnP. `camera` is the pinhole (fx, fy, cx, cy) at 1920x1080.
+    `floor` is from the face centre's height (camera at 0.44 m, floor face centres ~0.37 m
+    below it); `loaded` is the generator's raw flag (misses native rack cartons).
+    """
+    ref = frame["pose_reference"]
+    axes = np.asarray(ref["camera_flu_axes_world_columns"])  # columns: f, l, u in world
+    origin = np.asarray(ref["camera_position_world_m"])
+    world = pallet["labels"]["entry_12"]["keypoints_world_m"]
+    points = {k: axes.T @ (np.asarray(p) - origin) for k, p in world.items()}
+    rel = pallet["relative_pose"]["camera"]
+    c = rel["entry_face_center"]
+    centre = np.array([c["forward_m"], c["left_m"], c["up_m"]])
+    normal = np.asarray(pallet["relative_pose"]["entry_inward_normal_camera_flu"])
+    up = np.array([0.0, 0.0, 1.0])
+    frame_axes = np.stack([normal, np.cross(up, normal), up], axis=1)
+    return {
+        "model": pallet["model_name"],
+        "type": pallet["pallet_type"],
+        "loaded": bool(pallet["loaded"]),
+        "floor": bool(centre[2] < -0.25),
+        "centre_m": centre.tolist(),
+        "yaw_deg": float(rel["entry_face_yaw_deg"]),
+        "points_m": {k: p.tolist() for k, p in points.items()},
+        "layout_m": {
+            k: (frame_axes.T @ (p - centre)).tolist() for k, p in points.items()
+        },
+        # the face centre as the 4 outer corners give it, a check on the reference
+        "corner_centre_m": np.mean([points[k] for k in OUTER_CORNERS], axis=0).tolist(),
+        "camera": [camera[k] * SCALE for k in ("fx", "fy", "cx", "cy")],
+    }
 
 
 def main() -> None:
@@ -48,24 +98,31 @@ def main() -> None:
     parser.add_argument("--max-occlusion", type=float, default=0.8)
     parser.add_argument("--min-points", type=int, default=6)
     parser.add_argument("--min-width", type=float, default=60.0)
+    parser.add_argument(
+        "--labels-out",
+        type=Path,
+        default=None,
+        help="write the label JSONs here, no images (they must exist under --out)",
+    )
     args = parser.parse_args()
+    labels_out = args.labels_out or args.out
+    labels_out.mkdir(parents=True, exist_ok=True)
     (args.out / "images").mkdir(parents=True, exist_ok=True)
     root = args.root
-    views = {
-        Path(v["image"]).name: v
-        for v in json.loads((root / "views.json").read_text())["frames"]
-    }
+    views_file = json.loads((root / "views.json").read_text())
+    views = {Path(v["image"]).name: v for v in views_file["frames"]}
     entry = json.loads((root / "nikita_entry_instances.json").read_text())
     boxes_dir = root / "images/PalletView/bounding_box_2d_tight"
     multi: dict[str, dict] = {"train": {}, "test": {}}
     kps: dict[str, dict] = {"train": {}, "test": {}}
     crops: dict[str, dict] = {"train": {}, "test": {}}
     load: dict[str, dict] = {"train": {}, "test": {}}
+    poses: dict[str, dict] = {"train": {}, "test": {}}
     for name, view in sorted(views.items()):
         split = "test" if view["source_run"] in args.test_scenes else "train"
         idx = name[4:8]  # rgb_NNNN.png
         out_image = args.out / "images" / f"rgb_{idx}.jpg"
-        if not out_image.exists():
+        if args.labels_out is None and not out_image.exists():
             Image.open(root / view["image"]).convert("RGB").resize(
                 (1920, 1080), Image.Resampling.BICUBIC
             ).save(out_image, quality=92)
@@ -111,12 +168,14 @@ def main() -> None:
             if len(kp) >= args.min_points and max(us) - min(us) >= args.min_width:
                 key = f"{out_image}#s{len(pallets) - 1}"
                 kps[split][key], crops[split][key] = kp, box
+                poses[split][key] = pose_record(p, full, views_file["camera"])
                 if pallets[-1]["load"]:
                     load[split][key] = pallets[-1]["load"]
         multi[split][str(out_image)] = pallets
     for split in ("train", "test"):
-        (args.out / f"multi_{split}.json").write_text(json.dumps(multi[split]))
-        base = args.out / f"entry_{split}.json"
+        (labels_out / f"entry_{split}.pose.json").write_text(json.dumps(poses[split]))
+        (labels_out / f"multi_{split}.json").write_text(json.dumps(multi[split]))
+        base = labels_out / f"entry_{split}.json"
         base.write_text(json.dumps(kps[split]))
         base.with_suffix(".boxes.json").write_text(json.dumps(crops[split]))
         base.with_suffix(".load.json").write_text(json.dumps(load[split]))
@@ -130,6 +189,7 @@ def main() -> None:
             loaded=sum(p["load"] == "loaded" and not p["unsure"] for p in boxes),
             untagged=sum(p["load"] is None and not p["unsure"] for p in boxes),
             keypoint_pallets=len(kps[split]),
+            elevated=sum(not r["floor"] for r in poses[split].values()),
         )
 
 
