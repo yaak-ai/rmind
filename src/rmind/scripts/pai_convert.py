@@ -15,13 +15,16 @@ Input is the raw per-chunk download (`physical_ai_av`'s `local_dir` layout:
         --mask /nasa/drives/pai_sample_2k/our_valid_mask_576x324.png \
         --out /nasa/drives/pai_sample_2k
 
-CAMERA. `camera_front_wide_120fov` (f-theta, 1920x1080) is re-rendered as a
-LEVEL pinhole in the rig frame (optical axis = rig +x, no pitch/roll) with
-our `cam_front_left` geometry: fx = fy = 389.4 at 576x324 (`yaw_aug_fx`), and
-principal point (288, 180) -- the horizon row read off our frames, which have
-no stored calibration. The black fisheye arcs of our defished frames are
-copied on (`--mask`). Mount height (PAI ~1.6 m vs our windshield camera) and
-the hood are NOT matched.
+CAMERA. `camera_front_wide_120fov` (f-theta, 1920x1080) is re-rendered as the
+pinhole our training frames actually are: the fleet defisher's output (1920x1080,
+f = cx = 959.5, ~90 deg HFOV, centred principal point) resized to 576x324, i.e.
+f = 287.85, principal point (288, 162) in continuous pixel coords. The virtual
+camera's orientation in the rig is the fleet cam_front_left mount (3 deg
+pitch-up, no yaw/roll), as in alpasim `onnx_traj_e2e.yaml`
+(codex/e2e-training-matched-front-camera). The black fisheye arcs of our
+defished frames are copied on (`--mask`). This is a pure rotation remap, so the
+mount POSITION (fleet [1.80, 0.032, 1.30] m vs PAI ~1.6 m high) and the hood
+are NOT matched.
 
 KINEMATICS. Same conventions as our drives, so `TrajectoryTarget` and the
 waypoint goal encoder see identical semantics:
@@ -60,8 +63,12 @@ logger = get_logger(__name__)
 
 CAMERA = "camera_front_wide_120fov"
 OUT_W, OUT_H = 576, 324
-FX = 389.4
-CX, CY = 288.0, 180.0
+# fleet defisher pinhole (1920x1080, f = cx = 959.5) scaled by 576 / 1920
+FX = 959.5 * OUT_W / 1920
+CX, CY = OUT_W / 2, OUT_H / 2
+# fleet cam_front_left camera->rig rotation (OpenCV camera axes; rig x fwd,
+# y left, z up): 3 deg pitch-up. alpasim onnx_traj_e2e.yaml `rig_to_camera`.
+VIRTUAL_CAM_QUAT_XYZW = (0.4867401883, -0.4867401883, 0.5129171366, -0.5129171366)
 # ffmpeg pre-scale (area filter) before the bilinear remap, so the ~2.4x
 # f-theta -> pinhole minification doesn't alias
 DECODE_SCALE = 0.5
@@ -81,7 +88,7 @@ def _quat_to_matrix(qx: float, qy: float, qz: float, qw: float) -> np.ndarray:
 
 def remap_grid(intrinsics: dict, extrinsics: dict) -> tuple[np.ndarray, np.ndarray]:
     """Source (x, y) pixel coordinates in the DECODE_SCALE'd f-theta frame for
-    every output pixel of the level virtual pinhole.
+    every output pixel of the virtual (fleet-geometry) pinhole.
 
     Raises:
         ValueError: if the camera's optical axis isn't roughly rig-forward.
@@ -98,8 +105,11 @@ def remap_grid(intrinsics: dict, extrinsics: dict) -> tuple[np.ndarray, np.ndarr
 
     u, v = np.meshgrid(np.arange(OUT_W) + 0.5, np.arange(OUT_H) + 0.5)
     x, y = (u - CX) / FX, (v - CY) / FX
-    # virtual camera ray -> rig (forward = z, left = -x, up = -y) -> physical camera
-    rig = np.stack([np.ones_like(x), -x, -y], axis=-1)
+    # virtual camera ray (OpenCV axes) -> rig -> physical camera
+    rig = (
+        np.stack([x, y, np.ones_like(x)], axis=-1)
+        @ _quat_to_matrix(*VIRTUAL_CAM_QUAT_XYZW).T
+    )
     cam = rig @ cam_to_rig  # == (cam_to_rig.T @ rig.T).T
 
     th = np.arccos(cam[..., 2] / np.linalg.norm(cam, axis=-1))
