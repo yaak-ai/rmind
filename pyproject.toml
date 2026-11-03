@@ -63,6 +63,7 @@ predict = [
 train = [
   "contextily>=1.6.2",
   "matplotlib>=3.10.3",
+  "tokenizers>=0.21",
   "torchmetrics>=1.9",
   "wandb>=0.27.2",
 ]
