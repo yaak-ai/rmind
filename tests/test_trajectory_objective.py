@@ -68,13 +68,24 @@ def test_compute_and_generate_shapes() -> None:
 
 def test_tied_output_layer_is_the_embedding_and_never_emits_bos_pad() -> None:
     obj = _objective().eval()
-    assert obj.head is None  # tied by default
+    assert obj.tie_embeddings  # tied by default
+    assert not hasattr(obj.head, "weight")  # only a bias; the weight is the token embedding
     key = torch.randn(BATCH, 8, DIM)
     tokens = torch.full((BATCH, 1), obj.bos)
     logits = obj._logits(key, tokens)  # noqa: SLF001
     assert logits.shape[-1] == obj.token_embedding.num_embeddings  # same ids as the input
     with torch.no_grad():
-        obj.head_bias[obj.bos] = 1e4  # even a huge BOS / PAD logit must not be emitted
-        obj.head_bias[obj.pad] = 1e4
+        obj.head.bias[obj.bos] = 1e4  # even a huge BOS / PAD logit must not be emitted
+        obj.head.bias[obj.pad] = 1e4
     _, ids = obj.generate_from_key(key)
     assert all(obj.bos not in row and obj.pad not in row for row in ids)
+
+
+def test_parameters_are_named_for_selective_adamw() -> None:
+    from rmind.components.optimizers import SelectiveAdamW  # noqa: PLC0415
+
+    for tie in (True, False):
+        obj = TrajectoryObjective(
+            decoder=_decoder(causal=True), tokenizer_dir="assets/fast_trajectory_h10", dim=DIM, tie_embeddings=tie
+        )
+        SelectiveAdamW(obj, weight_decay=0.1, weight_decay_module_blacklist=(torch.nn.Embedding, torch.nn.LayerNorm), lr=1e-4)

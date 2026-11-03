@@ -32,6 +32,14 @@ IGNORE = -100
 _PACKAGE_ROOT = Path(__file__).resolve().parents[2]  # .../src/rmind
 
 
+class _OutputBias(Module):
+    """Output bias of the tied head (its weight is the token embedding)."""
+
+    def __init__(self, n: int) -> None:
+        super().__init__()
+        self.bias = nn.Parameter(torch.zeros(n))
+
+
 @final
 class TrajectoryObjective(Objective):
     @validate_call
@@ -61,20 +69,20 @@ class TrajectoryObjective(Objective):
         # small init (GPT-2 style): with tying this matrix also produces the logits, and the
         # default N(0, 1) would start them ~sqrt(dim) times too large
         nn.init.normal_(self.token_embedding.weight, std=0.02)
-        self.position = nn.Parameter(torch.zeros(max_tokens, dim))
-        nn.init.normal_(self.position, std=0.02)
+        # module parameters named weight / bias, so SelectiveAdamW can group them
+        self.position = nn.Embedding(max_tokens, dim)
+        nn.init.normal_(self.position.weight, std=0.02)
         self.final_norm = nn.LayerNorm(dim)
         # output over the same vocab + 3 ids as the input embedding. BOS / PAD are never targets,
         # so training pushes their logits down, and generation masks them out. With
         # tie_embeddings the output layer is the token-embedding matrix (plus its own bias).
         self.tie_embeddings = tie_embeddings
-        self.head_bias = nn.Parameter(torch.zeros(vocab + 3))
-        self.head: Module | None = None if tie_embeddings else nn.Linear(dim, vocab + 3, bias=False)
+        self.head: Module = _OutputBias(vocab + 3) if tie_embeddings else nn.Linear(dim, vocab + 3)
         self.target = target
         self.latent_index = latent_index
         self.max_tokens = max_tokens
         # token loss on the non-padding positions; default cross-entropy (e.g. FocalLoss instead)
-        self.loss: Module = loss if loss is not None else nn.CrossEntropyLoss()
+        self.losses: Module = loss if loss is not None else nn.CrossEntropyLoss()
         # in eval mode, also decode greedily to report position errors in metres and keep
         # target / prediction for the W&B trajectory logger (training steps skip this)
         self.decode_on_validation = decode_on_validation
@@ -85,10 +93,10 @@ class TrajectoryObjective(Objective):
 
     def _logits(self, key: Tensor, tokens: Tensor) -> Tensor:
         """(b, L) input token ids -> (b, L, vocab + 3) next-token logits."""
-        x = self.token_embedding(tokens) + self.position[: tokens.shape[1]]
+        x = self.token_embedding(tokens) + self.position.weight[: tokens.shape[1]]
         h = self.final_norm(self.decoder(x, key, key))
-        weight = self.token_embedding.weight if self.head is None else self.head.weight
-        return torch.nn.functional.linear(h, weight, self.head_bias)
+        weight = self.token_embedding.weight if self.tie_embeddings else self.head.weight
+        return torch.nn.functional.linear(h, weight, self.head.bias)
 
     def _encode(self, poses: Tensor) -> tuple[Tensor, Tensor]:
         """(b, P, 3) poses -> decoder inputs [BOS t1 .. tL] and targets [t1 .. tL EOS], padded."""
@@ -111,7 +119,7 @@ class TrajectoryObjective(Objective):
         inputs, targets = self._encode(poses)
         logits = self._logits(self._key(latent), inputs)
         valid = targets != IGNORE
-        loss = self.loss(logits[valid], targets[valid])
+        loss = self.losses(logits[valid], targets[valid])
         metrics: dict = {"loss": {"tokens": loss}}
         with torch.no_grad():
             metrics["token_accuracy"] = (logits.argmax(-1) == targets)[valid].float().mean()
