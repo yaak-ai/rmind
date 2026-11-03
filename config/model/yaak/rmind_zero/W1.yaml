@@ -49,12 +49,32 @@ episode_builder:
 
           context:
             waypoints: [data, waypoints/xy_normalized]
+            heading: [data, headings_denoised/heading]
+            time_stamp: [data, "meta/ImageMetadata.cam_front_left/time_stamp"]
 
           discrete:
             turn_signal: [data, meta/VehicleState/turn_signal]
 
+      # TRAJECTORY target: dead-reckoned (x, y, theta) for the next ${trajectory_horizon} steps from
+      # every timestep, built on the full clip BEFORE ChunkFields narrows it to episode_length
+      # (bicycle-model heading cleanup + trapezoid integration, as for the FAST tokenizer)
+      - _target_: rmind.components.nn.TrajectoryTarget
+        speed: [continuous, speed]
+        heading: [context, heading]
+        time_stamp: [context, time_stamp]
+        steering: [continuous, steering_angle]
+        out: [context, trajectory_target]
+        episode_length: ${episode_length}
+        num_poses: ${trajectory_horizon}
+        integration: trapezoid
+        heading_cleanup:
+          wheelbase_m: 2.70
+          road_wheel_deg_per_unit: 29.9
+          low_speed_kmh: 20.0
+          max_jump_deg: 10.0
+
       # POLICY look-ahead: stack the raw per-step actions at full clip length, then
-      # unfold that single field into `episode_length` windows of `clip_horizon` steps;
+      # unfold that single field into `episode_length` windows of `policy_chunk_horizon` steps;
       # POLICY drops the current step, keeping the strictly-future action_clip=6 chunk.
       # Doing it as ONE field (not per-channel copies) avoids cascading extra fields
       # through every downstream ModuleDict stage.
@@ -69,7 +89,7 @@ episode_builder:
       # chunk unfold FIRST (needs the full future tail before the h=1 unfold narrows it)
       - _target_: rmind.components.nn.ChunkFields
         episode_length: ${episode_length}
-        action_horizon: ${clip_horizon}
+        action_horizon: ${policy_chunk_horizon}
         unfold_paths:
           - [joint_actions_chunk]
 
@@ -218,6 +238,12 @@ episode_builder:
       context:
         waypoints:
           _target_: rmind.components.nn.Identity
+        heading:
+          _target_: rmind.components.nn.Identity
+        time_stamp:
+          _target_: rmind.components.nn.Identity
+        trajectory_target:
+          _target_: rmind.components.nn.Identity
 
       joint_actions:
         _target_: rmind.models.action_tokenizer.ActionTokenizer.load_from_wandb_artifact
@@ -251,6 +277,9 @@ episode_builder:
 
       context:
         waypoints: null
+        heading: null
+        time_stamp: null
+        trajectory_target: null
 
       discrete:
         turn_signal: null
@@ -286,6 +315,9 @@ episode_builder:
 
       context:
         waypoints: null
+        heading: null
+        time_stamp: null
+        trajectory_target: null
 
       discrete:
         turn_signal: null
@@ -609,3 +641,30 @@ objectives:
           offset:
             _target_: torch.nn.L1Loss
       chunk: [input, joint_actions_chunk]
+
+    # FAST trajectory head: a causal decoder over the fitted FAST+BPE tokenizer's vocabulary
+    # (rounded DCT of the next ${trajectory_horizon} poses, then BPE), cross-attending to the last world
+    # latent W(T-1); next-token cross-entropy. Runs alongside POLICY.
+    trajectory:
+      _target_: rmind.components.objectives.trajectory.TrajectoryObjective
+      tokenizer_dir: assets/fast_trajectory_h10
+      dim: ${encoder_embedding_dim}
+      latent_index: -1
+      max_tokens: 32
+      loss:
+        _target_: rmind.components.loss.FocalLoss
+        gamma: 2.0
+      key_norm:
+        _target_: torch.nn.LayerNorm
+        normalized_shape: ${encoder_embedding_dim}
+      decoder:
+        _target_: rmind.components.transformer.CrossAttentionDecoder
+        dim_model: ${encoder_embedding_dim}
+        num_layers: 4
+        num_heads: 4
+        attn_dropout: 0.1
+        resid_dropout: 0.1
+        mlp_dropout: 0.1
+        hidden_layer_multiplier: 1
+        self_attn: true
+        causal: true

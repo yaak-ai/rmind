@@ -18,9 +18,13 @@ episode_length: 6
 action_horizon: 1
 episode_step: 10
 episode_stride: 10
-# clip_horizon spans the POLICY look-ahead: episode_length=6 encoded steps + a 6-step
-# strictly-future action chunk (a_6..a_11) needs actions up to index 11 -> clip_length 12.
-clip_horizon: 7
+# POLICY look-ahead: the current step + a 6-step strictly-future action chunk (a_6..a_11)
+policy_chunk_horizon: 7
+# TRAJECTORY head: 10 future poses (3.3 s) from the last encoded step
+trajectory_horizon: 10
+# clip_horizon spans the longest look-ahead: episode_length=6 encoded steps + 10 future poses
+# need samples up to index 15 -> clip_length 16 (the policy chunk only uses the first 12)
+clip_horizon: 11
 clip_length: "${eval:'${episode_length} + ${clip_horizon} - 1'}"
 clip_period: "${eval:'${clip_length} * ${episode_step}'}i"
 

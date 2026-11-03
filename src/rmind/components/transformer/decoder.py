@@ -1,5 +1,6 @@
 from typing import Self, final, override
 
+import torch
 from pydantic import BaseModel, ConfigDict, model_validator, validate_call
 from torch import Tensor, nn
 
@@ -18,9 +19,14 @@ class CrossAttentionDecoderBlock(nn.Module):
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 1,
         self_attn: bool = True,
+        *,
+        causal: bool = False,
     ) -> None:
         super().__init__()
 
+        # causal: each query attends only to itself and earlier queries in self-attention
+        # (autoregressive decoding); cross-attention to the keys is unaffected
+        self.causal = causal
         self.cross_attn_norm = nn.LayerNorm(embedding_dim)
         self.cross_attn = nn.MultiheadAttention(
             embed_dim=embedding_dim,
@@ -72,8 +78,18 @@ class CrossAttentionDecoderBlock(nn.Module):
         if self.use_self_attn:
             residual = x
             x_norm = self.self_attn_norm(x)
+            n = x_norm.shape[1]
+            causal_mask = (
+                torch.ones(n, n, dtype=torch.bool, device=x_norm.device).triu(1)
+                if self.causal
+                else None
+            )
             self_attn_out, _ = self.self_attn(
-                query=x_norm, key=x_norm, value=x_norm, need_weights=False
+                query=x_norm,
+                key=x_norm,
+                value=x_norm,
+                attn_mask=causal_mask,
+                need_weights=False,
             )
             x = residual + self.self_attn_resid_drop(self_attn_out)
 
@@ -93,6 +109,8 @@ class CrossAttentionDecoder(nn.Module):
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 1,
         self_attn: bool = True,
+        *,
+        causal: bool = False,
     ) -> None:
         super().__init__()
         self.layers = nn.ModuleList([
@@ -104,6 +122,7 @@ class CrossAttentionDecoder(nn.Module):
                 resid_dropout=resid_dropout,
                 hidden_layer_multiplier=hidden_layer_multiplier,
                 self_attn=self_attn,
+                causal=causal,
             )
             for _ in range(num_layers)
         ])

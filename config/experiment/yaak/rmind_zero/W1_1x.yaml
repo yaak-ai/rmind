@@ -1,6 +1,6 @@
 # @package _global_
 # W1 at the half size of run zany-gorge-809 (7eyuo8tg): 32 latent tokens, latent
-# cross-attention 4 layers, world 8, FWD / INV / POLICY decoders 2. W1 itself is the 2x model.
+# cross-attention 4 layers, world 8, FWD / INV / POLICY / TRAJECTORY decoders 2. W1 itself is the 2x model.
 defaults:
   - /experiment/yaak/rmind_zero/W1
   - _self_
@@ -43,3 +43,6 @@ model:
         decoder:
           decoder:
             num_layers: 2
+      trajectory:
+        decoder:
+          num_layers: 2

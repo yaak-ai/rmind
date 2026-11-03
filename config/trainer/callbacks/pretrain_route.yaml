@@ -65,3 +65,22 @@
   embeddings_target: [forward_dynamics, _artifacts, last_targets]
   hot_quantile: 0.05
   max_hot_pairs: 50000
+# TRAJECTORY head: ground truth vs greedy-decoded trajectory, camera projection + top-down view;
+# same cadence as the patch-similarity plots (train and val, every 1000th sample id)
+- _target_: rmind.callbacks.loggers.WandbTrajectoryPredictionLogger
+  when: on_train_batch_end
+  key: trajectory_predictions
+  target_path: [trajectory, _artifacts, target]
+  predicted_path: [trajectory, _artifacts, predicted]
+  key_path: [trajectory, _artifacts, key]
+  image_path: [data, cam_front_left]
+  sample_id_path: [data, meta/sample_id]
+  every_n_sample: 1000
+- _target_: rmind.callbacks.loggers.WandbTrajectoryPredictionLogger
+  when: on_validation_batch_end
+  key: trajectory_predictions
+  target_path: [trajectory, _artifacts, target]
+  predicted_path: [trajectory, _artifacts, predicted]
+  image_path: [data, cam_front_left]
+  sample_id_path: [data, meta/sample_id]
+  every_n_sample: 1000
