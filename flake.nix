@@ -15,7 +15,7 @@
           ffmpeg
         ];
         uvWrapped = writeShellScriptBin "uv" ''
-          export LD_LIBRARY_PATH="${uvLibraryPath}''${NIX_LD_LIBRARY_PATH:+:''${NIX_LD_LIBRARY_PATH}}"
+          export LD_LIBRARY_PATH="${uvLibraryPath}:/run/opengl-driver/lib"
           exec ${lib.getExe uv} "$@"
         '';
       in
