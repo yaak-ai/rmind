@@ -155,9 +155,9 @@ def _small_inputs(
     """
     jitter = np.float32(rng.uniform(0.92, 1.08))
     return {
-        "inputs_image": np.clip(frame * jitter, 0, 1)[None, None].astype(np.float32),
-        "inputs_speed": np.full((1, 1, 1), rng.uniform(0, 40), np.float32),
-        "inputs_waypoints": np.stack(
+        "image": np.clip(frame * jitter, 0, 1)[None, None].astype(np.float32),
+        "speed": np.full((1, 1, 1), rng.uniform(0, 40), np.float32),
+        "waypoints": np.stack(
             [
                 rng.normal(0, 0.02, num_waypoints).astype(np.float32),
                 (np.arange(num_waypoints, dtype=np.float32) + 1)
@@ -323,7 +323,7 @@ def cmd_onnx_vs_eager(args: argparse.Namespace) -> int:
     step = _trained_step(args.artifact, args.ckpt)
     sess = ort.InferenceSession(str(args.onnx), providers=["CPUExecutionProvider"])
     shapes = {i.name: i.shape for i in sess.get_inputs()}
-    cache_frames = shapes["inputs_past_k"][3] // step.trunk.tokens_per_frame
+    cache_frames = shapes["past_k"][3] // step.trunk.tokens_per_frame
 
     worst = 0.0
     results: dict[str, Any] = {"cache_frames": cache_frames, "trials": {}}
@@ -331,7 +331,7 @@ def cmd_onnx_vs_eager(args: argparse.Namespace) -> int:
         feed = _eager_feed(step, cache_frames, seed=1000 + trial)
         with torch.inference_mode():
             eager = step(feed)
-        got = sess.run(None, {f"inputs_{k}": v.numpy() for k, v in feed.items()})
+        got = sess.run(None, {k: v.numpy() for k, v in feed.items()})
         names = [o.name for o in sess.get_outputs()]
         ref = {
             "policy.joint_actions": eager["policy", "joint_actions"],
@@ -402,9 +402,9 @@ def cmd_margins(args: argparse.Namespace) -> int:  # noqa: PLR0914, PLR0915
     )
     sess = ort.InferenceSession(str(probe_path), providers=["CPUExecutionProvider"])
     meta = {i.name: (i.shape, i.type) for i in sess.get_inputs()}
-    cache_tokens = meta["inputs_past_k"][0][3]
-    num_waypoints = meta["inputs_waypoints"][0][2]
-    frames = _real_frames(args.frames, meta["inputs_image"][0][-1])
+    cache_tokens = meta["past_k"][0][3]
+    num_waypoints = meta["waypoints"][0][2]
+    frames = _real_frames(args.frames, meta["image"][0][-1])
 
     rng = np.random.default_rng(args.seed)
     per_probe: dict[str, list[float]] = {name: [] for name, _ in probes}
@@ -413,20 +413,16 @@ def cmd_margins(args: argparse.Namespace) -> int:  # noqa: PLR0914, PLR0915
         feed = _small_inputs(rng, frames[trial % len(frames)], num_waypoints)
         # a WARM cache: unfilled slots would mask the cache away entirely and
         # screen a context the served model never sees
-        feed["inputs_past_k"] = rng.standard_normal(
-            meta["inputs_past_k"][0], dtype=np.float32
-        )
-        feed["inputs_past_v"] = rng.standard_normal(
-            meta["inputs_past_v"][0], dtype=np.float32
-        )
-        feed["inputs_cache_bias"] = np.zeros((1, 1, 1, cache_tokens), np.float32)
+        feed["past_k"] = rng.standard_normal(meta["past_k"][0], dtype=np.float32)
+        feed["past_v"] = rng.standard_normal(meta["past_v"][0], dtype=np.float32)
+        feed["cache_bias"] = np.zeros((1, 1, 1, cache_tokens), np.float32)
         cos, sin = frame_rope_cos_sin(
             torch.tensor(int(rng.integers(0, 4096))),
-            head_dim=meta["inputs_rope_cos"][0][-1],
+            head_dim=meta["rope_cos"][0][-1],
             base=1000.0,
         )
-        feed["inputs_rope_cos"] = cos.reshape(1, -1).numpy().astype(np.float32)
-        feed["inputs_rope_sin"] = sin.reshape(1, -1).numpy().astype(np.float32)
+        feed["rope_cos"] = cos.reshape(1, -1).numpy().astype(np.float32)
+        feed["rope_sin"] = sin.reshape(1, -1).numpy().astype(np.float32)
 
         got = dict(zip(names, sess.run(None, feed), strict=True))
         for probe_name, tensor_name in probes:
@@ -489,9 +485,9 @@ def cmd_trials(args: argparse.Namespace) -> int:  # noqa: PLR0914
     sess = ort.InferenceSession(str(args.onnx), providers=["CPUExecutionProvider"])
     meta = {i.name: i.shape for i in sess.get_inputs()}
     k = step.trunk.tokens_per_frame
-    cache_frames = meta["inputs_past_k"][3] // k
-    num_waypoints = meta["inputs_waypoints"][2]
-    frames = _real_frames(args.frames, meta["inputs_image"][-1])
+    cache_frames = meta["past_k"][3] // k
+    num_waypoints = meta["waypoints"][2]
+    frames = _real_frames(args.frames, meta["image"][-1])
     rng = np.random.default_rng(args.seed)
 
     per_history = args.trials // args.histories
@@ -528,9 +524,9 @@ def cmd_trials(args: argparse.Namespace) -> int:  # noqa: PLR0914
             )
             cos, sin = step.rope(tick)
             feed = {
-                "image": torch.from_numpy(small["inputs_image"]),
-                "speed": torch.from_numpy(small["inputs_speed"]),
-                "waypoints": torch.from_numpy(small["inputs_waypoints"]),
+                "image": torch.from_numpy(small["image"]),
+                "speed": torch.from_numpy(small["speed"]),
+                "waypoints": torch.from_numpy(small["waypoints"]),
                 "past_k": past_k,
                 "past_v": past_v,
                 "cache_bias": bias,
@@ -562,20 +558,14 @@ def cmd_trials(args: argparse.Namespace) -> int:  # noqa: PLR0914
             cos, sin = step.rope(frame_index)
             feed = {
                 **small,
-                "inputs_past_k": past_k_np,
-                "inputs_past_v": past_v_np,
-                "inputs_cache_bias": bias_np,
-                "inputs_rope_cos": cos.numpy().astype(np.float32),
-                "inputs_rope_sin": sin.numpy().astype(np.float32),
+                "past_k": past_k_np,
+                "past_v": past_v_np,
+                "cache_bias": bias_np,
+                "rope_cos": cos.numpy().astype(np.float32),
+                "rope_sin": sin.numpy().astype(np.float32),
             }
             reference[trial] = sess.run(["policy.joint_actions"], feed)[0][0]
-            for name in (
-                "inputs_image",
-                "inputs_speed",
-                "inputs_waypoints",
-                "inputs_rope_cos",
-                "inputs_rope_sin",
-            ):
+            for name in ("image", "speed", "waypoints", "rope_cos", "rope_sin"):
                 feed[name].tofile(out / "inputs" / f"t{trial:03d}_{name}.dat")
             manifest["items"].append({"trial": trial, "history": history})
             if trial % 20 == 0:

@@ -93,9 +93,9 @@ def real_frames(spec: str, size: int) -> list[np.ndarray]:
 def small_inputs(rng, frame, num_waypoints):
     jitter = np.float32(rng.uniform(0.92, 1.08))
     return {
-        "inputs_image": np.clip(frame * jitter, 0, 1)[None, None].astype(np.float32),
-        "inputs_speed": np.full((1, 1, 1), rng.uniform(0, 40), np.float32),
-        "inputs_waypoints": np.stack(
+        "image": np.clip(frame * jitter, 0, 1)[None, None].astype(np.float32),
+        "speed": np.full((1, 1, 1), rng.uniform(0, 40), np.float32),
+        "waypoints": np.stack(
             [
                 rng.normal(0, 0.02, num_waypoints).astype(np.float32),
                 (np.arange(num_waypoints, dtype=np.float32) + 1)
@@ -204,11 +204,11 @@ def main() -> int:
     sess = ort.InferenceSession(str(a.onnx), providers=["CPUExecutionProvider"])
     meta = {i.name: i.shape for i in sess.get_inputs()}
     tokens_per_frame = [o.shape for o in sess.get_outputs() if o.name == "new_k"][0][3]
-    cache_tokens = meta["inputs_past_k"][3]
+    cache_tokens = meta["past_k"][3]
     cache_frames = cache_tokens // tokens_per_frame
-    head_dim = meta["inputs_rope_cos"][-1]
-    num_waypoints = meta["inputs_waypoints"][2]
-    image_hw = meta["inputs_image"][-1]
+    head_dim = meta["rope_cos"][-1]
+    num_waypoints = meta["waypoints"][2]
+    image_hw = meta["image"][-1]
     print(
         f"  cache_frames={cache_frames} tokens_per_frame={tokens_per_frame} "
         f"cache_tokens={cache_tokens} head_dim={head_dim} image={image_hw}"
@@ -225,10 +225,9 @@ def main() -> int:
         rows = [
             b
             for b in runner.describe()
-            if b["name"]
-            in ("inputs_past_k", "inputs_past_v", "inputs_cache_bias", "new_k", "new_v")
+            if b["name"] in ("past_k", "past_v", "cache_bias", "new_k", "new_v")
         ]
-        total = sum(b["bytes"] for b in rows if b["name"].startswith("inputs_past"))
+        total = sum(b["bytes"] for b in rows if b["name"].startswith("past"))
         cache_report[label] = {
             "bindings": rows,
             "kv_cache_bytes": total,
@@ -236,7 +235,7 @@ def main() -> int:
         }
         print(
             f"  {label}: KV cache = {total / 1024 / 1024:.2f} MiB "
-            f"({[b['dtype'] for b in rows if b['name'] == 'inputs_past_k'][0]})"
+            f"({[b['dtype'] for b in rows if b['name'] == 'past_k'][0]})"
         )
 
     frames = real_frames(a.frames, image_hw)
@@ -254,8 +253,8 @@ def main() -> int:
     for history in range(a.histories):
         # --- stream this history tick by tick through ORT: cold cache, ring slot
         # writes, monotone frame counter. Real keys of real frames, not randn.
-        past_k = np.zeros(meta["inputs_past_k"], np.float32)
-        past_v = np.zeros(meta["inputs_past_v"], np.float32)
+        past_k = np.zeros(meta["past_k"], np.float32)
+        past_v = np.zeros(meta["past_v"], np.float32)
         bias = np.full((1, 1, 1, cache_tokens), -1e4, np.float32)
         for tick in range(cache_frames):
             cos, sin = rope_cos_sin(tick, head_dim)
@@ -263,11 +262,11 @@ def main() -> int:
                 rng, frames[(history + tick) % len(frames)], num_waypoints
             )
             feed |= {
-                "inputs_past_k": past_k,
-                "inputs_past_v": past_v,
-                "inputs_cache_bias": bias,
-                "inputs_rope_cos": cos,
-                "inputs_rope_sin": sin,
+                "past_k": past_k,
+                "past_v": past_v,
+                "cache_bias": bias,
+                "rope_cos": cos,
+                "rope_sin": sin,
             }
             _, new_k, new_v = sess.run(["policy.joint_actions", "new_k", "new_v"], feed)
             lo = (tick % cache_frames) * tokens_per_frame
@@ -281,11 +280,11 @@ def main() -> int:
             cos, sin = rope_cos_sin(cache_frames + int(rng.integers(0, 512)), head_dim)
             feed = small_inputs(rng, frames[trial % len(frames)], num_waypoints)
             feed |= {
-                "inputs_past_k": past_k,
-                "inputs_past_v": past_v,
-                "inputs_cache_bias": bias,
-                "inputs_rope_cos": cos,
-                "inputs_rope_sin": sin,
+                "past_k": past_k,
+                "past_v": past_v,
+                "cache_bias": bias,
+                "rope_cos": cos,
+                "rope_sin": sin,
             }
             reference[trial] = sess.run(["policy.joint_actions"], feed)[0][0]
             for label, runner in runners.items():
