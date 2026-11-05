@@ -10,3 +10,5 @@ matmul_precision: "high"
 # resume training: a local Lightning checkpoint, or a W&B model artifact (entity/project/name:version)
 ckpt_path: null
 ckpt_artifact: null
+# false: restart Adam moments (checkpoints saved before the SelectiveAdamW ordering fix)
+ckpt_resume_optimizer_state: true

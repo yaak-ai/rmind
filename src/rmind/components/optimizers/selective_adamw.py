@@ -48,16 +48,22 @@ class SelectiveAdamW(AdamW):
                     msg = f"Handling of param_type '{param_type}' is not implemented"
                     raise NotImplementedError(msg)
 
-        weight_decay_param_whitelist = params.keys() - weight_decay_param_blacklist
-
+        # keep `named_parameters` order: optimizer state is saved by position, so the order
+        # must be the same in every process (set iteration order changes with the hash seed)
         param_groups = [
             {
                 "weight_decay": 0.0,
-                "params": [params[k] for k in weight_decay_param_blacklist],
+                "params": [
+                    p for k, p in params.items() if k in weight_decay_param_blacklist
+                ],
             },
             {
                 "weight_decay": weight_decay,
-                "params": [params[k] for k in weight_decay_param_whitelist],
+                "params": [
+                    p
+                    for k, p in params.items()
+                    if k not in weight_decay_param_blacklist
+                ],
             },
         ]
 

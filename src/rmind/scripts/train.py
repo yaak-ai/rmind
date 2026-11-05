@@ -40,6 +40,15 @@ def _train(cfg: DictConfig) -> None:
         )
         ckpt_path = str(Path(artifact_obj.download()) / "model.ckpt")
 
+    if ckpt_path is not None and not cfg.get("ckpt_resume_optimizer_state", True):
+        # keep weights, lr scheduler and step; drop Adam moments (re-estimated within a few
+        # steps). Needed for checkpoints whose optimizer parameter order cannot be matched.
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        for state in ckpt["optimizer_states"]:
+            state["state"] = {}
+        ckpt_path = str(Path(ckpt_path).with_name("model_reset_optimizer.ckpt"))
+        torch.save(ckpt, ckpt_path)
+
     logger.debug("starting training", ckpt_path=ckpt_path)
 
     return trainer.fit(model=model, datamodule=datamodule, ckpt_path=ckpt_path)
