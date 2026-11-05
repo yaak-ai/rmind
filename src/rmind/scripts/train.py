@@ -29,9 +29,20 @@ def _train(cfg: DictConfig) -> None:
     logger.debug("instantiating trainer", target=cfg.trainer._target_)
     trainer: pl.Trainer = instantiate(cfg.trainer)
 
-    logger.debug("starting training")
+    ckpt_path = cfg.get("ckpt_path")
+    if (artifact := cfg.get("ckpt_artifact")) is not None:
+        # resume from a checkpoint artifact (weights, optimizer, lr scheduler, epoch / step)
+        run = wandb.run
+        artifact_obj = (
+            run.use_artifact(artifact)
+            if run is not None and not run.disabled
+            else wandb.Api().artifact(artifact, type="model")
+        )
+        ckpt_path = str(Path(artifact_obj.download()) / "model.ckpt")
 
-    return trainer.fit(model=model, datamodule=datamodule)
+    logger.debug("starting training", ckpt_path=ckpt_path)
+
+    return trainer.fit(model=model, datamodule=datamodule, ckpt_path=ckpt_path)
 
 
 @hydra.main(version_base=None)
