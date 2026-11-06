@@ -323,6 +323,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         null_goal: HydraConfig[Module] | InstanceOf[Module] | None = None,
         speed_dropout: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0,
         goal_dropout: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0,
+        goal_absent: bool = False,
         speed: Path = ("continuous", "speed"),
         waypoints: Path = ("context", "waypoints"),
         chunk: Path = ("joint_actions",),
@@ -444,6 +445,10 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             if p > 0.0 and null is None:
                 msg = f"{name}_dropout > 0 requires null_{name}"
                 raise ValueError(msg)
+        if goal_absent and self.null_goal is None:
+            msg = "goal_absent requires null_goal"
+            raise ValueError(msg)
+        self.goal_absent = goal_absent
         self.speed_dropout = speed_dropout
         self.goal_dropout = goal_dropout
         self.speed: Path = speed
@@ -517,6 +522,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "num_register_tokens": num_register_tokens,
             "speed_dropout": speed_dropout,
             "goal_dropout": goal_dropout,
+            "goal_absent": goal_absent,
         }
 
         # opt-in dedicated readout + register tokens (default off: existing arms
@@ -577,6 +583,22 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             msg = f"input {path!r} missing from transformed batch"
             raise KeyError(msg)
         return value
+
+    @staticmethod
+    def _null_condition(x: Tensor, null: Module | None) -> Tensor:
+        """`x` replaced by its learned null token everywhere, in train AND eval.
+
+        `goal_absent`: the route never reaches the trunk -- `goal_dropout=1.0`
+        that also holds at validation/inference.
+
+        Raises:
+            ValueError: if `null` is missing.
+        """
+        if null is None:  # guarded in __init__ / load_for_continuation
+            msg = "null token required"
+            raise ValueError(msg)
+        token = null(torch.zeros(1, dtype=torch.long, device=x.device))
+        return token.expand_as(x)
 
     def _drop_condition(self, x: Tensor, p: float, null: Module | None) -> Tensor:
         """Replace `x` with a learned null token for a random subset of CLIPS.
@@ -698,7 +720,11 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             goal = self.goal_encoder.encode(waypoints)  # (b, t, g)
 
         # NOTE: outside the `no_grad` above, or `null_goal` never gets gradient
-        goal = self._drop_condition(goal, self.goal_dropout, self.null_goal)
+        goal = (
+            self._null_condition(goal, self.null_goal)
+            if self.goal_absent
+            else self._drop_condition(goal, self.goal_dropout, self.null_goal)
+        )
 
         # each camera contributes its own `p` patches through the same frozen
         # encoder/patch_projection -- no new parameters, just a longer per-frame
@@ -1572,6 +1598,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         optimizer: Any,
         lr_scheduler: Any | None = None,
         loss_weights: Mapping[str, float] | None = None,
+        goal_absent: bool | None = None,
         **_ignored: Any,
     ) -> "PatchPolicy":
         """Warm-start continuation training from a finished run's checkpoint.
@@ -1587,9 +1614,14 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         `turn_signal_weight` to continue on data without CAN labels. Like the
         optimizer, the new values are written back into `hparams`.
 
+        `goal_absent` (`None` = keep the checkpoint's) switches the route input
+        off: the checkpoint's learned `null_goal` replaces the goal latent in
+        training and validation alike (a permanent goal dropout).
+
         Raises:
             ValueError: if `loss_weights` names a key outside
-                `CONTINUATION_LOSS_WEIGHTS`.
+                `CONTINUATION_LOSS_WEIGHTS`, or `goal_absent` is set on a
+                checkpoint without `null_goal`.
 
         `**_ignored` swallows architecture keys that parent experiments inline
         under `model.*` (e.g. dinov2_dinowm's `image_encoder`): on continuation
@@ -1613,6 +1645,12 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                 raise ValueError(msg)
             setattr(model, key, float(value))
             model.hparams[key] = float(value)
+        if goal_absent is not None:
+            if goal_absent and model.null_goal is None:
+                msg = "goal_absent requires a checkpoint with null_goal"
+                raise ValueError(msg)
+            model.goal_absent = goal_absent
+            model.hparams["goal_absent"] = goal_absent
         model.hparams["optimizer"] = optimizer.model_dump()
         model.hparams["lr_scheduler"] = (
             lr_scheduler.model_dump() if lr_scheduler is not None else None

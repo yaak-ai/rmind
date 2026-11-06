@@ -1,0 +1,26 @@
+# @package _global_
+
+# pai_ft (t88lr6o3 recipe: 2k PAI slice, fleet-defisher cam90 frames, lr 3e-5,
+# trajectory + mode losses only) WITHOUT the route on input: the checkpoint's
+# learned null_goal replaces the waypoint goal latent in training AND
+# validation (PatchPolicy.goal_absent -- a goal_dropout of 1.0 that also holds
+# at eval). Everything else is identical, so val numbers compare directly with
+# t88lr6o3 and isolate how much the route contributes on PAI.
+#
+#   just train experiment=yaak/patch_policy/pai_ft_nogoal \
+#       continuation_artifact=yaak/alex-tmp/model-dfldy2ki:v51
+#
+# Expect val/policy/metric/goal_sensitivity_{yaw,lateral} ~= 0 (sanity check:
+# the left/right route probes cannot move the plan).
+
+defaults:
+  - /experiment/yaak/patch_policy/pai_ft
+  - _self_
+
+continuation_goal_absent: true
+
+paths:
+  pai_data: /nasa/drives/pai_sample_2k_cam90
+
+wandb:
+  tags: [patch_policy, pai_ft, physicalai_av, continuation, cam90, no_goal]

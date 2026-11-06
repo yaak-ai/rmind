@@ -24,3 +24,7 @@ lr_scheduler: null
 # null = keep the checkpoint's loss weights; a map overrides the named ones
 # (PatchPolicy.CONTINUATION_LOSS_WEIGHTS), e.g. for data without CAN labels.
 loss_weights: ${oc.select:continuation_loss_weights,null}
+
+# null = keep the checkpoint's; true = route input off (null_goal in train AND
+# val, a permanent goal dropout), e.g. the pai_ft_nogoal arm.
+goal_absent: ${oc.select:continuation_goal_absent,null}

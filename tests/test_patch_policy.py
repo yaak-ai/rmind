@@ -157,6 +157,7 @@ def _make_model(  # noqa: PLR0913
     mode_weight: float = 1.0,
     speed_dropout: float = 0.0,
     goal_dropout: float = 0.0,
+    goal_absent: bool = False,
     nulls: bool = False,
     trunk_dropout: float = 0.1,
     counterfactual_val_frames: int = 0,
@@ -229,6 +230,7 @@ def _make_model(  # noqa: PLR0913
         null_goal=Embedding(1, GOAL_DIM) if nulls else None,
         speed_dropout=speed_dropout,
         goal_dropout=goal_dropout,
+        goal_absent=goal_absent,
         teacher_force_offset=teacher_force_offset,
         prediction_config=PredictionConfig(
             objectives={
@@ -1600,6 +1602,40 @@ def test_conditioning_dropout_is_train_only() -> None:
         assert not torch.allclose(
             features, _features_seeded(model, _perturbed(batch, path))
         ), path
+
+
+def test_goal_absent_removes_waypoint_dependence_in_train_and_eval() -> None:
+    """`goal_absent` is a goal dropout that also holds in eval, and trains null_goal."""
+    model = _make_model(goal_absent=True, nulls=True, trunk_dropout=0.0)
+    batch = _make_batch()
+    for mode in (model.train, model.eval):
+        mode()
+        torch.testing.assert_close(
+            _features_seeded(model, batch),
+            _features_seeded(model, _perturbed(batch, ("context", "waypoints"))),
+        )
+
+    model.train()
+    model._compute_metrics(batch)["policy", "loss"].sum(reduce=True).backward()  # noqa: SLF001
+    assert model.null_goal is not None
+    assert model.null_goal.weight.grad is not None
+    assert model.null_goal.weight.grad.abs().sum() > 0
+
+    with pytest.raises(ValueError, match="goal_absent"):
+        _make_model(goal_absent=True, nulls=False)
+
+
+def test_continuation_sets_goal_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    optimizer = {"_target_": "torch.optim.AdamW", "_partial_": True, "lr": 3e-5}
+    source = _make_model(nulls=True)
+    monkeypatch.setattr(
+        PatchPolicy, "load_from_wandb_artifact", lambda *_a, **_k: source
+    )
+    model = PatchPolicy.load_for_continuation(
+        "entity/project/model-x:v0", optimizer=optimizer, goal_absent=True
+    )
+    assert model.goal_absent
+    assert model.hparams["goal_absent"] is True
 
 
 def test_null_tokens_are_trained() -> None:
