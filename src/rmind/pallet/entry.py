@@ -21,8 +21,9 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from rmind.pallet.camera_aug import camera_realism
 from rmind.pallet.correspondence import NAMES, POINTS_3D
-from rmind.pallet.keypoints import CROP_SIZE, Crop, gaussian_targets
+from rmind.pallet.keypoints import CROP_SIZE, Crop, RectCrop, gaussian_targets
 
 FLIP_INDEX: Final = tuple(
     int(np.argmin(np.linalg.norm(POINTS_3D - p * np.array([1.0, -1.0, 1.0]), axis=1)))
@@ -68,6 +69,26 @@ def crop_for_box(
     )
 
 
+def rect_crop_for_box(
+    box: np.ndarray,
+    rng: np.random.Generator | None,
+    *,
+    margin: float,
+    wide: bool = False,
+) -> RectCrop:
+    """Non-square crop around a box (`RectCrop.around`); with `rng`, jittered in scale
+    and position independently per axis (`wide`: looser, as for `crop_for_box`)."""
+    crop = RectCrop.around(tuple(box), margin)
+    if rng is None:
+        return crop
+    lo, hi, shift = (0.8, 1.5, 0.2) if wide else (0.85, 1.25, 0.1)
+    w, h = crop.w * rng.uniform(lo, hi), crop.h * rng.uniform(lo, hi)
+    dx, dy = rng.uniform(-shift, shift, size=2) * np.array([crop.w, crop.h])
+    return RectCrop(
+        crop.x0 + (crop.w - w) / 2 + dx, crop.y0 + (crop.h - h) / 2 + dy, w, h
+    )
+
+
 class EntryKeypoints(Dataset):
     def __init__(  # ruff: ignore[too-many-arguments]
         self,
@@ -78,12 +99,23 @@ class EntryKeypoints(Dataset):
         train: bool,
         seed: int = 0,
         quality_aug: bool = False,
+        crop_shape: tuple[int, int] | None = None,
+        crop_margin: float = 0.3,
+        camera_aug_prefix: str | None = None,
+        downsample_max: float = 5.0,
     ) -> None:
         import torchvision.transforms.v2 as T  # ruff: ignore[import-outside-top-level]
 
         self.root = root
         # crops of varied quality: loose / off-centre crops and low effective resolution
         self.quality_aug = quality_aug
+        # None: square crops (`crop_for_box`); (W, H): box + `crop_margin` per side, resized
+        self.crop_shape = crop_shape
+        self.crop_margin = crop_margin
+        # samples whose image path starts with this (renders) get real-camera degradations
+        self.camera_aug_prefix = camera_aug_prefix
+        # quality aug: simulate the pallet up to this many times further away (low resolution)
+        self.downsample_max = downsample_max
         self.items = [(n, *labels[n], detector_boxes.get(n)) for n in sorted(labels)]
         self.train = train
         self.rng = np.random.default_rng(seed)
@@ -121,25 +153,44 @@ class EntryKeypoints(Dataset):
             xy[:, 0] = WIDTH - 1 - xy[:, 0]
             xy, labelled = xy[list(FLIP_INDEX)], labelled[list(FLIP_INDEX)]
             box = np.array([WIDTH - 1 - box[2], box[1], WIDTH - 1 - box[0], box[3]])
-        crop = crop_for_box(
-            box, self.rng if self.train else None, wide=self.quality_aug
-        )
-        patch = crop.extract(image)
+        rng = self.rng if self.train else None
+        if self.crop_shape is None:
+            crop = crop_for_box(box, rng, wide=self.quality_aug)
+            size = (CROP_SIZE, CROP_SIZE)
+            patch = crop.extract(image)
+            local = torch.from_numpy(crop.to_crop(np.nan_to_num(xy))).float()
+            scale_xy = torch.tensor([crop.side / CROP_SIZE] * 2)
+            geometry = [crop.x0, crop.y0, crop.side]
+        else:
+            crop = rect_crop_for_box(
+                box, rng, margin=self.crop_margin, wide=self.quality_aug
+            )
+            size = self.crop_shape
+            patch = crop.extract(image, size)
+            local = torch.from_numpy(crop.to_crop(np.nan_to_num(xy), size)).float()
+            scale_xy = torch.tensor([crop.w / size[0], crop.h / size[1]])
+            geometry = [crop.x0, crop.y0, crop.w, crop.h]
         if self.train:
+            if self.camera_aug_prefix and name.startswith(self.camera_aug_prefix):
+                patch = camera_realism(patch, self.rng)
             patch = self.color(patch)
             if self.quality_aug and self.rng.random() < 0.5:  # ruff: ignore[magic-value-comparison]
                 # as if the pallet were 1.5-5x further away: downsample, then back up
-                small = max(16, int(CROP_SIZE / self.rng.uniform(1.5, 5.0)))
+                factor = self.rng.uniform(
+                    min(1.5, self.downsample_max), self.downsample_max
+                )
+                small = (max(16, int(size[1] / factor)), max(16, int(size[0] / factor)))
                 patch = torch.nn.functional.interpolate(
                     torch.nn.functional.interpolate(
                         patch[None], size=small, mode="area"
                     ),
-                    size=CROP_SIZE,
+                    size=(size[1], size[0]),
                     mode="bilinear",
                     align_corners=False,
                 )[0]
-        local = torch.from_numpy(crop.to_crop(np.nan_to_num(xy))).float()
-        inside = ((local >= 0) & (local < CROP_SIZE)).all(dim=-1)
+        inside = ((local >= 0) & (local < torch.tensor(size, dtype=local.dtype))).all(
+            dim=-1
+        )
         visible = inside & torch.from_numpy(labelled)
         return {
             "image": (patch - MEAN) / STD,
@@ -147,9 +198,11 @@ class EntryKeypoints(Dataset):
             "visible": visible,
             # a labelled point outside the crop is labelled "absent"; unlabelled is ignored
             "labelled": torch.from_numpy(labelled),
-            "targets": gaussian_targets(local[None], visible[None])[0],
-            "scale": torch.tensor(crop.side / CROP_SIZE),
+            "targets": gaussian_targets(local[None], visible[None], size)[0],
+            # raw frame pixels per crop pixel; `scale_xy` per axis (non-square crops)
+            "scale": scale_xy.mean(),
+            "scale_xy": scale_xy,
             # the crop in (possibly flipped) frame pixels, for heads that need its geometry
-            "crop": torch.tensor([crop.x0, crop.y0, crop.side], dtype=torch.float64),
+            "crop": torch.tensor(geometry, dtype=torch.float64),
             "flipped": torch.tensor(flipped),
         }

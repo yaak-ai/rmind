@@ -59,7 +59,10 @@ def evaluate(
     with torch.no_grad():
         for b in loader:
             pixels, _ = decode(net(b["image"].to(device)))
-            err = (pixels.cpu() - b["keypoints"]).norm(dim=-1) * b["scale"][:, None]
+            # crop -> raw frame pixels per axis (non-square crops scale x and y differently)
+            err = ((pixels.cpu() - b["keypoints"]) * b["scale_xy"][:, None, :]).norm(
+                dim=-1
+            )
             errors.append(err[b["visible"]])
     e = torch.cat(errors)
     return {
@@ -113,6 +116,39 @@ def main() -> None:
     )
     parser.add_argument("--no-wandb", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--crop-shape",
+        type=int,
+        nargs=2,
+        default=None,
+        metavar=("W", "H"),
+        help="non-square crops: box + --crop-margin per side, resized to W x H",
+    )
+    parser.add_argument("--crop-margin", type=float, default=0.3)
+    parser.add_argument(
+        "--min-face-width",
+        type=float,
+        default=0.0,
+        help="train only on pallets whose labelled points span at least this many px "
+        "(a model for near pallets); validation is unchanged",
+    )
+    parser.add_argument(
+        "--downsample-max",
+        type=float,
+        default=5.0,
+        help="quality aug: simulate the pallet up to this many times further away",
+    )
+    parser.add_argument(
+        "--camera-aug",
+        action="store_true",
+        help="real-camera degradations (blur, noise, compression, exposure) on renders "
+        "(images under /nasa/data/synthetic/)",
+    )
+    parser.add_argument(
+        "--synthetic-only",
+        action="store_true",
+        help="train only on --pseudo-labels (e.g. synthetic sets); hand labels still validate",
+    )
     parser.add_argument(
         "--pseudo-labels",
         type=Path,
@@ -172,6 +208,21 @@ def main() -> None:
     for f in [args.labels, *args.pseudo_labels]:
         if f.with_suffix(".load.json").exists():
             load_tags |= json.loads(f.with_suffix(".load.json").read_text())
+    if args.synthetic_only:
+        train_labels = dict(pseudo)
+    if args.min_face_width:  # near-pallet model: drop small (far) faces from training
+        before = len(train_labels)
+        train_labels = {
+            n: (xy, ok)
+            for n, (xy, ok) in train_labels.items()
+            if ok.sum() >= 2 and np.ptp(xy[ok][:, 0]) >= args.min_face_width
+        }
+        pseudo = {n: v for n, v in pseudo.items() if n in train_labels}
+        logger.info("near only", kept=len(train_labels), of=before)
+    crop = {
+        "crop_shape": tuple(args.crop_shape) if args.crop_shape else None,
+        "crop_margin": args.crop_margin,
+    }
     train = EntryKeypoints(
         args.images,
         train_labels,
@@ -179,13 +230,17 @@ def main() -> None:
         train=True,
         seed=args.seed,
         quality_aug=args.quality_aug,
+        camera_aug_prefix="/nasa/data/synthetic/" if args.camera_aug else None,
+        downsample_max=args.downsample_max,
+        **crop,
     )
-    val = EntryKeypoints(args.images, val_labels, boxes, train=False)
+    val = EntryKeypoints(args.images, val_labels, boxes, train=False, **crop)
     # sampling weight per training pallet: hand labels x 1, pseudo-labels x --pseudo-weight
     # (summed over all of them, so the pseudo set as a whole gets that share), loaded x --loaded-weight
     n_hand, n_pseudo = len(train_labels) - len(pseudo), max(len(pseudo), 1)
     weights = [
-        (args.pseudo_weight * n_hand / n_pseudo if name in pseudo else 1.0)
+        # no hand labels in training (--synthetic-only): pseudo-labels weigh 1 each
+        (args.pseudo_weight * n_hand / n_pseudo if name in pseudo and n_hand else 1.0)
         * (args.loaded_weight if load_tags.get(name) == "loaded" else 1.0)
         for name, *_ in train.items
     ]
@@ -285,6 +340,7 @@ def main() -> None:
                     "state_dict": net.state_dict(),
                     "backbone": args.backbone,
                     "keypoints": NAMES,
+                    **crop,
                     "metrics": m,
                 },
                 args.out / "best.pt",

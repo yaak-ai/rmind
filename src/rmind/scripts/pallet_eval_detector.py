@@ -28,6 +28,55 @@ logger = get_logger(__name__)
 SIZES = ((0, 100), (100, 250), (250, 2000))  # box width in px at 1920: far, mid, near
 
 
+def recall_by(
+    pred: dict[str, list], labels: dict[str, list], groups
+) -> dict[str, float]:
+    """Centre recall of positive pallets per group; `groups(frame, pallet)` -> group names."""
+    n: dict[str, int] = {}
+    hit: dict[str, int] = {}
+    for name, pallets in labels.items():
+        for q in pallets:
+            if not is_positive(q):
+                continue
+            cx, cy = (q["box"][0] + q["box"][2]) / 2, (q["box"][1] + q["box"][3]) / 2
+            found = any(
+                b[0] <= cx <= b[2] and b[1] <= cy <= b[3] for b in pred.get(name, [])
+            )
+            for g in groups(name, q):
+                n[g] = n.get(g, 0) + 1
+                hit[g] = hit.get(g, 0) + found
+    return {f"centre_{g}": hit[g] / n[g] for g in sorted(n)} | {
+        f"n_{g}": n[g] for g in sorted(n)
+    }
+
+
+def pallet_groups(scene: dict[str, dict]):
+    """Stack / rack / loaded of the pallet and the frame's scene type, if known."""
+
+    def groups(name: str, q: dict) -> list[str]:
+        out = []
+        if q.get("stack_size") is not None:
+            stack = (
+                "single"
+                if (q["stack_size"] or 1) <= 1
+                else "stack_bottom"
+                if not q.get("stack_position")
+                else "stack_upper"
+            )
+            out += [f"stack={stack}", "rack=rack" if q.get("rack_level") else "rack=no"]
+        if q.get("level"):  # real test set v2: floor / rack1 / rack2+ / stack
+            out.append(f"level={q['level']}")
+        if q.get("load") in {"loaded", "empty"}:
+            out.append(f"loaded={q['load']}")
+        out += [f"{k[4:]}={v}" for k, v in q.items() if k.startswith("tag_")]
+        for axis, value in scene.get(name, {}).items():
+            if axis in {"background", "cone", "light", "layout"}:
+                out.append(f"{axis}={value}")
+        return out
+
+    return groups
+
+
 def recall_by_size(pred: dict[str, list], labels: dict[str, list]) -> dict[str, float]:
     """Centre recall of positive pallets per box-width bucket (`SIZES`)."""
     out = {}
@@ -60,10 +109,25 @@ def main() -> None:
     parser.add_argument("--heads", type=Path, nargs="+", required=True)
     parser.add_argument("--images", type=Path, default=Path("/"))
     parser.add_argument("--thresholds", type=float, nargs="+", default=[0.2, 0.3, 0.4])
+    parser.add_argument(
+        "--max-boxes",
+        type=int,
+        default=20,
+        help="boxes kept per frame; dense synthetic frames have 50+ pallets",
+    )
     parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument(
+        "--scene-meta",
+        type=Path,
+        default=None,
+        help="pallet_synthetic_scenes scene_meta.json: recall per scene type",
+    )
     parser.add_argument("--device", default="cuda:0")
     args = parser.parse_args()
     labels = json.loads(args.labels.read_text())
+    groups = pallet_groups(
+        json.loads(args.scene_meta.read_text()) if args.scene_meta else {}
+    )
     names = sorted(labels)
     results = {}
     frames, enc = None, None
@@ -85,10 +149,16 @@ def main() -> None:
             with torch.no_grad():
                 out = head(enc(x.to(args.device)))
             for t in args.thresholds:
-                preds[t] |= dict(zip(chunk, decode(out, t), strict=True))
+                preds[t] |= dict(
+                    zip(chunk, decode(out, t, k=args.max_boxes), strict=True)
+                )
         for t in args.thresholds:
             key = f"{path.parent.name}/{path.stem}@{t}"
-            results[key] = score(preds[t], labels) | recall_by_size(preds[t], labels)
+            results[key] = (
+                score(preds[t], labels)
+                | recall_by_size(preds[t], labels)
+                | recall_by(preds[t], labels, groups)
+            )
             logger.info(
                 "result", model=key, **{a: round(b, 3) for a, b in results[key].items()}
             )

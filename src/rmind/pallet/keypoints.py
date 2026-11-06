@@ -167,25 +167,91 @@ class PalletKeypointNet(nn.Module):
         return self.smooth(x), features
 
 
+class RectCrop(NamedTuple):
+    """A crop of the full frame with its own width and height, resized to a fixed
+    `(W, H)` input: top-left corner and size, in pixels.
+
+    For flat boxes (a pallet face is ~5x wider than tall) a square crop takes in a lot
+    above and below, e.g. the pallets of a stack; this one keeps to the box plus a
+    margin. The resize to `(W, H)` may scale x and y differently.
+    """
+
+    x0: float
+    y0: float
+    w: float
+    h: float
+
+    @classmethod
+    def around(
+        cls,
+        box: tuple[float, float, float, float],
+        margin: float,
+        max_aspect: float = 6.0,
+    ) -> "RectCrop":
+        """The box grown by `margin` of its size on each side; at most `max_aspect`
+        times wider than tall (or taller than wide)."""
+        x0, y0, x1, y1 = box
+        w, h = (x1 - x0) * (1 + 2 * margin), (y1 - y0) * (1 + 2 * margin)
+        w, h = max(w, h / max_aspect, 1.0), max(h, w / max_aspect, 1.0)
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        return cls(cx - w / 2, cy - h / 2, w, h)
+
+    def to_crop(self, pixels: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+        return (pixels - np.array([self.x0, self.y0])) * np.array([
+            size[0] / self.w,
+            size[1] / self.h,
+        ])
+
+    def to_frame(self, pixels: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+        return pixels * np.array([self.w / size[0], self.h / size[1]]) + np.array([
+            self.x0,
+            self.y0,
+        ])
+
+    def extract(self, image: Tensor, size: tuple[int, int]) -> Tensor:
+        """`(C, H, W)` float image -> `(C, size[1], size[0])` crop, bilinear, zero-padded."""
+        _, h, w = image.shape
+        xs = (torch.arange(size[0], dtype=image.dtype) + 0.5) * (
+            self.w / size[0]
+        ) + self.x0
+        ys = (torch.arange(size[1], dtype=image.dtype) + 0.5) * (
+            self.h / size[1]
+        ) + self.y0
+        gy, gx = torch.meshgrid(ys, xs, indexing="ij")
+        grid = torch.stack([gx / (w - 1) * 2 - 1, gy / (h - 1) * 2 - 1], dim=-1)
+        return F.grid_sample(
+            image[None],
+            grid[None].to(image.device),
+            align_corners=True,
+            padding_mode="zeros",
+        )[0]
+
+
 def gaussian_targets(
     keypoints: Tensor,
     visible: Tensor,
-    size: int = CROP_SIZE,
+    size: int | tuple[int, int] = CROP_SIZE,
     stride: int = STRIDE,
     sigma: float = 2.0,
 ) -> Tensor:
-    """`(B, K, 2)` crop pixels + `(B, K)` visibility -> `(B, K, S/4, S/4)` Gaussians.
+    """`(B, K, 2)` crop pixels + `(B, K)` visibility -> `(B, K, H/4, W/4)` Gaussians.
 
-    `sigma` is in heatmap cells. Invisible keypoints get an all-zero map, so the
-    net learns to say "not here" rather than being left unsupervised.
+    `size` is the crop side, or `(W, H)` for a non-square crop. `sigma` is in heatmap
+    cells. Invisible keypoints get an all-zero map, so the net learns to say "not
+    here" rather than being left unsupervised.
     """
-    n = size // stride
-    grid = (
-        torch.arange(n, dtype=keypoints.dtype, device=keypoints.device) + 0.5
-    ) * stride
+    width, height = (size, size) if isinstance(size, int) else size
+    cells = [
+        (
+            torch.arange(n // stride, dtype=keypoints.dtype, device=keypoints.device)
+            + 0.5
+        )
+        * stride
+        for n in (width, height)
+    ]
     # heatmap cell centres in crop pixels; distance in cells
-    dx = (grid[None, None, None, :] - keypoints[..., 0, None, None]) / stride
-    dy = (grid[None, None, :, None] - keypoints[..., 1, None, None]) / stride
+    dx = (cells[0][None, None, None, :] - keypoints[..., 0, None, None]) / stride
+    dy = (cells[1][None, None, :, None] - keypoints[..., 1, None, None]) / stride
     heat = torch.exp(-(dx**2 + dy**2) / (2 * sigma**2))
     return heat * visible[..., None, None].to(heat.dtype)
 

@@ -34,6 +34,7 @@ import torch.nn.functional as F
 from structlog import get_logger
 from torch import Tensor, nn
 
+from rmind.pallet.camera_aug import camera_realism
 from rmind.pallet.tracking import log_model, start, use_labels
 from rmind.scripts.pallet_proposer_head import (
     ENCODER,
@@ -234,14 +235,29 @@ def score(pred: dict[str, list], test: dict[str, list]) -> dict[str, float]:
 class Frames:
     """Full-res frames -> augmented (or plain) encoder input at the chosen resolution."""
 
-    def __init__(self, images: Path, names: list[str], res: tuple[int, int]) -> None:
+    def __init__(
+        self,
+        images: Path,
+        names: list[str],
+        res: tuple[int, int],
+        camera_aug: set[str] | None = None,
+    ) -> None:
         from PIL import Image
 
         self.res = res
-        # uint8 in memory (a float frame is 25 MB); absolute names (synthetic sets) ignore `images`
+        # frames (renders) that get real-camera degradations in training batches
+        self.camera_aug = camera_aug or set()
+        # uint8 in memory at twice the encoder resolution at most (all a crop of >= 75 % of
+        # the frame needs); absolute names (synthetic sets) ignore `images`
+        keep = (min(WIDTH, 2 * res[0]), min(HEIGHT, 2 * res[1]))
         self.full = {
             n: torch.from_numpy(
-                np.array(Image.open(images / n).convert("RGB"))
+                np.array(
+                    Image
+                    .open(images / n)
+                    .convert("RGB")
+                    .resize(keep, Image.Resampling.BILINEAR)
+                )
             ).permute(2, 0, 1)
             for n in names
         }
@@ -259,8 +275,14 @@ class Frames:
                 s = rng.uniform(0.75, 1.0)
                 cw, ch = WIDTH * s, HEIGHT * s
                 x0, y0 = rng.uniform(0, WIDTH - cw), rng.uniform(0, HEIGHT - ch)
-                img = img[:, int(y0) : int(y0 + ch), int(x0) : int(x0 + cw)]
-                k = WIDTH / img.shape[2], HEIGHT / img.shape[1]
+                # crop in frame pixels; the stored image may be smaller than the frame
+                sx, sy = img.shape[2] / WIDTH, img.shape[1] / HEIGHT
+                img = img[
+                    :,
+                    int(y0 * sy) : int((y0 + ch) * sy),
+                    int(x0 * sx) : int((x0 + cw) * sx),
+                ]
+                k = WIDTH / cw, HEIGHT / ch
                 pallets = [
                     p
                     | {
@@ -303,6 +325,8 @@ class Frames:
                         }
                         for p in pallets
                     ]
+                if n in self.camera_aug:
+                    img = camera_realism(img, rng)
                 img = (img * rng.uniform(0.7, 1.3) + rng.uniform(-0.1, 0.1)).clamp(0, 1)
             x = F.interpolate(
                 img[None],
@@ -323,6 +347,7 @@ class Loco(Frames):
 
     def __init__(self, root: Path, res: tuple[int, int]) -> None:
         self.res = res
+        self.camera_aug = set()
         d = json.loads((root / "loco-all-v1.json").read_text())
         pallet = next(c["id"] for c in d["categories"] if c["name"] == "pallet")
         paths = {p.name: p for p in root.glob("dataset/**/*.jpg")}
@@ -477,6 +502,11 @@ def main() -> None:
         help="share of each training batch drawn from --extra-train",
     )
     parser.add_argument(
+        "--extra-camera-aug",
+        action="store_true",
+        help="real-camera degradations (blur, noise, compression, exposure) on --extra-train frames",
+    )
+    parser.add_argument(
         "--extra-test",
         type=Path,
         default=None,
@@ -520,7 +550,12 @@ def main() -> None:
         extra |= json.loads(f.read_text())
     extra_names = sorted(extra)
     extra_test = json.loads(args.extra_test.read_text()) if args.extra_test else {}
-    frames = Frames(args.images, names + extra_names + sorted(extra_test), res)
+    frames = Frames(
+        args.images,
+        names + extra_names + sorted(extra_test),
+        res,
+        camera_aug=set(extra_names) if args.extra_camera_aug else None,
+    )
     train_labels = labels | extra
     logger.info(
         "frames",
