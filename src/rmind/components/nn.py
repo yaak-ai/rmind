@@ -1,6 +1,6 @@
 from collections.abc import Callable, Mapping
 from functools import partial
-from typing import Any, final, override
+from typing import Any, Literal, final, override
 
 import torch
 from pydantic import InstanceOf, validate_call
@@ -183,7 +183,9 @@ class TrajectoryTarget(Module):
     `ModuleDict` stage later in `input_transform` keys its outer broadcast by
     the top-level names in its own `modules:` mapping, so an unlisted
     top-level key would break that match. Emits `None` when any input field
-    is absent.
+    is absent. With `steering`, the heading is first cleaned with a bicycle model
+    (`rmind.components.dead_reckoning.bicycle_cleaned_heading`); `integration`
+    selects start-of-step (`left`, default) or `trapezoid` integration.
     """
 
     @validate_call
@@ -196,9 +198,15 @@ class TrajectoryTarget(Module):
         out: tuple[str, ...],
         episode_length: int,
         num_poses: int,
+        steering: tuple[str, ...] | None = None,
+        heading_cleanup: dict[str, float] | None = None,
+        integration: Literal["left", "trapezoid"] = "left",
     ) -> None:
         super().__init__()
 
+        self.integration: Literal["left", "trapezoid"] = integration
+        self._steering = tuple(map(MappingKey, steering)) if steering else None
+        self.heading_cleanup = heading_cleanup
         self._speed = tuple(map(MappingKey, speed))
         self._heading = tuple(map(MappingKey, heading))
         self._time_stamp = tuple(map(MappingKey, time_stamp))
@@ -223,12 +231,18 @@ class TrajectoryTarget(Module):
         if speed is None or heading is None or time_stamp is None:
             return self._assoc(input, self._out, None)
 
+        steering = (
+            key_get_default(input, self._steering, None) if self._steering else None
+        )
         trajectory = rolling_dead_reckoned_trajectory(
             speed_kmh=speed,
             heading_deg=heading,
             time_stamp_us=time_stamp,
             episode_length=self.episode_length,
             num_poses=self.num_poses,
+            steering=steering,
+            heading_cleanup=self.heading_cleanup,
+            integration=self.integration,
         )
         return self._assoc(input, self._out, trajectory)
 

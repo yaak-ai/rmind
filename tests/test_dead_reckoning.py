@@ -7,6 +7,7 @@ import pytest
 import torch
 
 from rmind.components.dead_reckoning import (
+    bicycle_cleaned_heading,
     dead_reckon_future_trajectory,
     gnss_anchor_drift_m,
     rolling_dead_reckoned_trajectory,
@@ -279,3 +280,76 @@ def test_rolling_trajectory_batched() -> None:
         num_poses=6,
     )
     assert out.shape == (b, 4, 6, 3)
+
+
+def _cleanup_inputs(
+    speed_kmh: float, heading_deg: list[float], steering: float = 0.0
+) -> dict[str, torch.Tensor]:
+    t = len(heading_deg)
+    return {
+        "speed_kmh": torch.full((t,), speed_kmh, dtype=torch.float64),
+        "heading_deg": torch.tensor(heading_deg, dtype=torch.float64),
+        "steering": torch.full((t,), steering, dtype=torch.float64),
+        "time_stamp_s": torch.arange(t, dtype=torch.float64) / 3,
+    }
+
+
+def test_bicycle_cleaned_heading_keeps_consistent_heading_at_speed() -> None:
+    # 50 km/h, straight, heading drifts 0.5 deg/step: consistent with steering 0 -> kept
+    inputs = _cleanup_inputs(50.0, [10.0, 10.5, 11.0, 11.5])
+    assert torch.allclose(bicycle_cleaned_heading(**inputs), inputs["heading_deg"])
+
+
+def test_bicycle_cleaned_heading_replaces_glitch_at_speed() -> None:
+    # a 110 deg jump within one step at 80 km/h with steering 0 -> replaced (heading stays put)
+    inputs = _cleanup_inputs(80.0, [10.0, 10.0, 120.0, 120.0])
+    cleaned = bicycle_cleaned_heading(**inputs)
+    assert torch.allclose(cleaned, torch.full((4,), 10.0, dtype=torch.float64))
+
+
+def test_bicycle_cleaned_heading_uses_bicycle_at_low_speed() -> None:
+    # 10 km/h, full right steering: heading follows v / L * tan(delta) * dt, filter ignored
+    inputs = _cleanup_inputs(10.0, [0.0, 0.0, 0.0], steering=1.0)
+    cleaned = bicycle_cleaned_heading(
+        **inputs, wheelbase_m=2.7, road_wheel_deg_per_unit=30.0
+    )
+    step = math.degrees(10 / 3.6 / 2.7 * math.tan(math.radians(30.0)) / 3)
+    assert torch.allclose(
+        cleaned, torch.tensor([0.0, step, 2 * step], dtype=torch.float64)
+    )
+
+
+def test_rolling_trajectory_with_steering_drops_heading_glitch() -> None:
+    inputs = _cleanup_inputs(80.0, [0.0, 0.0, 120.0, 120.0, 0.0, 0.0])
+    poses = rolling_dead_reckoned_trajectory(
+        speed_kmh=inputs["speed_kmh"],
+        heading_deg=inputs["heading_deg"],
+        time_stamp_us=(inputs["time_stamp_s"] * 1e6).long(),
+        steering=inputs["steering"],
+        episode_length=1,
+        num_poses=5,
+    )
+    assert torch.allclose(poses[0, :, 0], torch.zeros(5), atol=1e-5)  # straight ahead
+    assert torch.allclose(poses[0, :, 2], torch.zeros(5), atol=1e-6)
+
+
+def test_trapezoid_integration_matches_constant_deceleration() -> None:
+    # 54 -> 18 km/h over 3 s in 1/3 s steps, straight: exact distance = mean speed * T = 10 m/s * 3 s
+    t = torch.arange(10, dtype=torch.float64) / 3
+    speed_kmh = 54.0 - 12.0 * t * 1.0  # -12 km/h per s
+    heading = torch.zeros(10, dtype=torch.float64)
+    left, _ = dead_reckon_future_trajectory(
+        speed_kmh=speed_kmh, heading_deg=heading, time_stamp_s=t
+    )
+    trap, _ = dead_reckon_future_trajectory(
+        speed_kmh=speed_kmh,
+        heading_deg=heading,
+        time_stamp_s=t,
+        integration="trapezoid",
+    )
+    exact = float((speed_kmh[0] + speed_kmh[-1]) / 2 / 3.6 * t[-1])
+    assert float(trap[-1, 1]) == pytest.approx(exact, abs=1e-9)
+    # start-of-step overestimates distance when braking: by a * T * dt / 2 = 0.5 m here
+    assert float(left[-1, 1]) - exact == pytest.approx(
+        10 / 3 * 3 * (1 / 3) / 2, abs=1e-9
+    )

@@ -4,6 +4,9 @@
 # heading-convention bug this fixes (GNSS-anchor drift 12.6m -> 2.05m) was
 # real and easy to reintroduce -- see the convention note in
 # `dead_reckon_future_trajectory`'s body below.
+import math
+from typing import Literal
+
 import torch
 from torch import Tensor
 
@@ -14,6 +17,7 @@ def dead_reckon_future_trajectory(
     heading_deg: Tensor,
     time_stamp_s: Tensor,
     reference_index: int = 0,
+    integration: Literal["left", "trapezoid"] = "left",
 ) -> tuple[Tensor, Tensor]:
     """Dead-reckon a future ego-centric `(x, y, theta)` trajectory from
     CAN-bus speed and EKF/RTS-denoised heading, anchored at `reference_index`.
@@ -43,6 +47,11 @@ def dead_reckon_future_trajectory(
         time_stamp_s: `(*batch, T)` timestamps, float seconds.
         reference_index: index `t0` to anchor the ego frame at; poses are
             returned for `t0+1 .. T-1` (`P = T - 1 - t0` future poses).
+        integration: `left` holds each step's start speed and heading for the
+            whole step; `trapezoid` uses the mean speed and the mid-step heading.
+            At 1/3 s steps `left` is biased by about a * T * dt / 2 along track
+            (about +-1 m over 3.3 s at 1.5 m/s^2); against GNSS (val drives, GNSS
+            lag of ~0.1 s removed) `trapezoid` matches a 30 Hz integration.
 
     Returns:
         `(position, heading)`: `position` is `(*batch, P, 2)` ego-centric
@@ -55,6 +64,10 @@ def dead_reckon_future_trajectory(
     heading_rad = torch.deg2rad(heading_deg)
     ref_heading = heading_rad[..., t0 : t0 + 1]
     step_heading_rel = heading_rad[..., t0:-1] - ref_heading
+    if integration == "trapezoid":
+        speed_m_s = (speed_kmh[..., t0:-1] + speed_kmh[..., t0 + 1 :]) / 2 / 3.6
+        turn = heading_rad[..., t0 + 1 :] - heading_rad[..., t0:-1]
+        step_heading_rel += torch.atan2(torch.sin(turn), torch.cos(turn)) / 2
     dt = time_stamp_s[..., t0 + 1 :] - time_stamp_s[..., t0:-1]
 
     # `heading_deg` is a compass bearing (0deg = north = world +y/northing,
@@ -77,13 +90,67 @@ def dead_reckon_future_trajectory(
     return position, heading_rel
 
 
-def rolling_dead_reckoned_trajectory(
+def bicycle_cleaned_heading(  # noqa: PLR0913
+    *,
+    speed_kmh: Tensor,
+    heading_deg: Tensor,
+    steering: Tensor,
+    time_stamp_s: Tensor,
+    wheelbase_m: float = 2.70,
+    road_wheel_deg_per_unit: float = 29.9,
+    low_speed_kmh: float = 20.0,
+    max_jump_deg: float = 10.0,
+) -> Tensor:
+    """Clean the denoised heading step by step with a kinematic bicycle model.
+
+    The per-step heading change comes from `heading_deg` unless the step is slow
+    (mean speed < `low_speed_kmh`, where the heading filter is noisy) or its change
+    disagrees with the bicycle model by more than `max_jump_deg` (filter glitches,
+    e.g. jumps of ~100 deg within one 1/3 s step at highway speed). Those steps use
+    the bicycle model instead: dtheta = v / wheelbase * tan(delta) * dt, with the
+    road-wheel angle delta = `road_wheel_deg_per_unit` * steering (normalized, + =
+    right; fitted against the heading on 20-70 km/h training steps: 29.9 deg, median
+    error 0.12 deg/step). The result is rebuilt by accumulating these changes from
+    the first heading, so a single bad step no longer rotates the whole trajectory.
+
+    Args:
+        speed_kmh: `(*batch, T)` CAN-bus speed, km/h.
+        heading_deg: `(*batch, T)` denoised compass heading, degrees.
+        steering: `(*batch, T)` normalized steering angle in [-1, 1].
+        time_stamp_s: `(*batch, T)` timestamps, float seconds.
+
+    Returns:
+        `(*batch, T)` cleaned heading, degrees (unwrapped).
+    """
+    heading = torch.deg2rad(heading_deg.double())
+    speed_m_s = (speed_kmh[..., :-1] + speed_kmh[..., 1:]).double() / 2 / 3.6
+    delta = torch.deg2rad(
+        road_wheel_deg_per_unit * (steering[..., :-1] + steering[..., 1:]).double() / 2
+    )
+    dt = time_stamp_s[..., 1:] - time_stamp_s[..., :-1]
+    bicycle = speed_m_s / wheelbase_m * torch.tan(delta) * dt
+
+    measured = heading[..., 1:] - heading[..., :-1]
+    measured = torch.atan2(torch.sin(measured), torch.cos(measured))
+
+    use_bicycle = (speed_m_s * 3.6 < low_speed_kmh) | (
+        (measured - bicycle).abs() > math.radians(max_jump_deg)
+    )
+    step = torch.where(use_bicycle, bicycle, measured)
+    cleaned = torch.cat([heading[..., :1], heading[..., :1] + step.cumsum(dim=-1)], -1)
+    return torch.rad2deg(cleaned).to(heading_deg.dtype)
+
+
+def rolling_dead_reckoned_trajectory(  # noqa: PLR0913
     *,
     speed_kmh: Tensor,
     heading_deg: Tensor,
     time_stamp_us: Tensor,
     episode_length: int,
     num_poses: int,
+    steering: Tensor | None = None,
+    heading_cleanup: dict[str, float] | None = None,
+    integration: Literal["left", "trapezoid"] = "left",
 ) -> Tensor:
     """Per-frame future ego-centric `(x, y, theta)` trajectory, dead-reckoned
     independently at every one of the first `episode_length` anchor frames --
@@ -110,6 +177,10 @@ def rolling_dead_reckoned_trajectory(
             episode_length - 1`.
         num_poses: number of future poses per anchor, `t0 + 1 .. t0 +
             num_poses`.
+        steering: optional `(*batch, T)` normalized steering angle; when given,
+            `heading_deg` is first cleaned with `bicycle_cleaned_heading`.
+        heading_cleanup: optional keyword overrides for `bicycle_cleaned_heading`.
+        integration: see `dead_reckon_future_trajectory`.
 
     Returns:
         `(*batch, episode_length, num_poses, 3)`: ego-centric `(x, y, theta)`
@@ -129,6 +200,14 @@ def rolling_dead_reckoned_trajectory(
         raise ValueError(msg)
 
     time_stamp_s = time_stamp_us.double() / 1e6
+    if steering is not None:
+        heading_deg = bicycle_cleaned_heading(
+            speed_kmh=speed_kmh,
+            heading_deg=heading_deg,
+            steering=steering,
+            time_stamp_s=time_stamp_s,
+            **(heading_cleanup or {}),
+        )
     poses = []
     for t0 in range(episode_length):
         position, heading = dead_reckon_future_trajectory(
@@ -136,6 +215,7 @@ def rolling_dead_reckoned_trajectory(
             heading_deg=heading_deg,
             time_stamp_s=time_stamp_s,
             reference_index=t0,
+            integration=integration,
         )
         poses.append(
             torch.cat(
