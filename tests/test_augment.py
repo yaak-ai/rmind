@@ -225,3 +225,102 @@ def test_frame_mask_hides_hood_and_arcs_at_any_shift(psi_deg: float) -> None:
     assert torch.equal(out[..., ~keep], torch.zeros_like(out[..., ~keep]))
     assert (out[..., keep] > 0.49).all()  # noqa: PLR2004
     assert 0.2 < (~keep).float().mean() < 0.35  # noqa: PLR2004
+
+
+def _steer_module(*, probability: float = 1.0, tick_s: float = 1 / 3) -> YawShiftCrop:
+    return YawShiftCrop(
+        crop_width=512,
+        fx=FX,
+        cameras=["cam_front_left"],
+        steering=("continuous", "steering_angle"),
+        probability=probability,
+        tick_s=tick_s,
+    )
+
+
+def _steer_batch(b: int = 2, t: int = 4, h: int = 6, speed: float = 36.0) -> dict:
+    batch = _batch(b=b, t=t)
+    batch["continuous"] = {
+        "speed": torch.full((b, t, 1), speed),
+        "steering_angle": torch.zeros(b, t, h),
+    }
+    return batch
+
+
+def test_steering_untouched_by_default() -> None:
+    batch = _steer_batch()
+
+    out = _module(probability=1.0).train()(batch)
+
+    assert out["continuous"] is batch["continuous"]
+
+
+def test_steering_steers_back_left_when_camera_yawed_right() -> None:
+    module = _steer_module()
+    psi = torch.full((2, 4), math.radians(3.0))
+    speed = torch.full((2, 4), 36.0)
+
+    delta = module.steering_correction(psi, speed, 6)
+
+    assert (delta < 0).all()  # psi > 0 (yawed right) -> steer left
+    assert (delta.diff(dim=-1) > 0).all()  # decays toward 0 along the chunk
+    assert_close(module.steering_correction(-psi, speed, 6), -delta)
+
+
+def test_steering_correction_closes_heading_error_kinematically() -> None:
+    """Integrating the corrected curvature over the chunk's distance must remove
+    the share of psi that pure pursuit's exponential decay predicts."""
+    module = _steer_module(tick_s=0.01)  # fine steps for the integral
+    psi = torch.full((1, 1), math.radians(2.0))
+    v_kmh = 36.0
+    h = 200  # 2 s
+    delta = module.steering_correction(psi, torch.full((1, 1), v_kmh), h)
+    ds = v_kmh / 3.6 * module.tick_s
+
+    turned = (delta * module.steer_curvature * ds).sum()
+
+    lookahead = module.lookahead_s * v_kmh / 3.6
+    expected = -psi.item() * (1 - math.exp(-2 * h * ds / lookahead))
+    assert_close(turned.item(), expected, rtol=2e-2, atol=0.0)
+
+
+def test_steering_correction_is_speed_free_above_min_lookahead() -> None:
+    module = _steer_module()
+    psi = torch.full((1, 1), math.radians(3.0))
+
+    slow = module.steering_correction(psi, torch.full((1, 1), 30.0), 6)
+    fast = module.steering_correction(psi, torch.full((1, 1), 90.0), 6)
+
+    # curvature ~ 1/L and L ~ v: faster -> proportionally gentler steering
+    assert_close(slow / fast, torch.full_like(slow, 3.0))
+
+
+def test_no_steering_correction_below_min_speed() -> None:
+    module = _steer_module()
+    psi = torch.full((1, 2), math.radians(3.0))
+    speed = torch.tensor([[2.0, 20.0]])
+
+    delta = module.steering_correction(psi, speed, 6)
+
+    assert (delta[0, 0] == 0).all()
+    assert (delta[0, 1] != 0).all()
+
+
+NEAR_LEFT_LOCK = -0.999
+
+
+def test_steering_applied_only_to_perturbed_clips_and_clamped() -> None:
+    batch = _steer_batch(b=64)
+    recorded = torch.full_like(batch["continuous"]["steering_angle"], NEAR_LEFT_LOCK)
+    batch["continuous"]["steering_angle"] = recorded
+
+    out = _steer_module(probability=0.5).train()(batch)
+
+    steer = out["continuous"]["steering_angle"]
+    target = out["context"]["trajectory_target"]
+    perturbed = (target != batch["context"]["trajectory_target"]).flatten(2).any(-1)
+    assert perturbed.any()
+    assert (~perturbed).any()
+    assert torch.equal(steer[~perturbed], recorded[~perturbed])
+    assert not torch.equal(steer[perturbed], recorded[perturbed])
+    assert steer.min() >= -1.0

@@ -56,6 +56,7 @@ model:
         probability: ${yaw_aug_probability}
         init_max_deg: ${yaw_aug_init_max_deg}
         step_std_deg: ${yaw_aug_step_std_deg}
+        steering: ${yaw_aug_steering}
 
       - _target_: rmind.components.containers.ModuleDict
         modules:

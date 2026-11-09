@@ -82,6 +82,30 @@ class YawShiftCrop(Module):
     whole pixels and the labels use the realised `psi = shift / fx`, so image
     and labels agree exactly.
 
+    Steering (opt-in, `steering` path set): the action chunk `(b, t, h)` is a
+    target only, so it gets the steering that would bring the yawed car back
+    onto the recorded path -- pure pursuit against the rotated path. A
+    lookahead point at distance `L` on the path sits at bearing `-psi` from
+    the yawed heading, which needs an extra curvature `dk = -2 sin(psi) / L`;
+    the bicycle model makes curvature linear in steering and speed-free,
+    `k = steer_curvature * steering`. Following `dk` decays the heading error
+    as `psi(s) = psi exp(-2 s / L)` over distance `s`, so chunk step `j`
+    (distance `v j tick_s`) gets
+    `-2 sin(psi exp(-2 s_j / L)) / (L * steer_curvature)`, with
+    `L = max(min_lookahead_m, lookahead_s * v)`. Above `min_lookahead_m` the
+    decay is speed-free (`exp(-2 j tick_s / lookahead_s)`). No correction
+    below `min_speed_kmh`, where steering cannot yaw the car. The result is
+    clamped to `[-1, 1]`. First-order: the lateral offset the recovery
+    itself builds up is ignored.
+
+    `steer_curvature` defaults to the fleet-pooled lateral fit
+    (`docs/trajectory_action_controller_handoff.md` #4/#12:
+    `dheading ~= steer_gain * steering * speed_kmh` per 1/3 s tick,
+    `steer_gain ~= 0.0186` rad), i.e. `3.6 * 0.0186 / (1/3) ~= 0.20` rad/m
+    per unit normalized steering: a ~5 m radius at full lock. Positive
+    steering turns RIGHT (positive gain against compass heading), so
+    `psi > 0` gets a negative (leftward) correction.
+
     Sampling: per clip, with probability `probability`, a smooth random walk
     (`psi_0 ~ U(-init_max_deg, init_max_deg)`, increments `N(0, step_std_deg)`
     per frame, clipped to the crop margin). A per-frame independent offset
@@ -98,9 +122,16 @@ class YawShiftCrop(Module):
         cameras: list[str],
         trajectory_target: tuple[str, ...] = ("context", "trajectory_target"),
         waypoints: tuple[str, ...] = ("context", "waypoints"),
+        steering: tuple[str, ...] | None = None,
+        speed: tuple[str, ...] = ("continuous", "speed"),
         probability: float = 0.5,
         init_max_deg: float = 4.0,
         step_std_deg: float = 0.5,
+        steer_curvature: float = 3.6 * 0.0186 * 3.0,
+        lookahead_s: float = 2.0,
+        min_lookahead_m: float = 5.0,
+        min_speed_kmh: float = 5.0,
+        tick_s: float = 1.0 / 3.0,
     ) -> None:
         super().__init__()
 
@@ -109,6 +140,13 @@ class YawShiftCrop(Module):
         self.cameras = cameras
         self._trajectory_target = trajectory_target
         self._waypoints = waypoints
+        self._steering = steering
+        self._speed = speed
+        self.steer_curvature = steer_curvature
+        self.lookahead_s = lookahead_s
+        self.min_lookahead_m = min_lookahead_m
+        self.min_speed_kmh = min_speed_kmh
+        self.tick_s = tick_s
         self.probability = probability
         self.init_max_deg = init_max_deg
         self.step_std_deg = step_std_deg
@@ -156,11 +194,27 @@ class YawShiftCrop(Module):
 
         return self.rotate_labels(output, psi)
 
+    def steering_correction(self, psi: Tensor, speed_kmh: Tensor, h: int) -> Tensor:
+        """Pure-pursuit steering offset `(b, t, h)` for yaw `psi` `(b, t)` rad
+        at speed `speed_kmh` `(b, t)`; see the class docstring."""
+        v = speed_kmh.float().clamp_min(0.0) / 3.6
+        lookahead = (self.lookahead_s * v).clamp_min(self.min_lookahead_m)[..., None]
+        step = torch.arange(h, device=psi.device, dtype=torch.float32)
+        distance = v[..., None] * step * self.tick_s
+        heading_error = psi.float()[..., None] * torch.exp(-2.0 * distance / lookahead)
+        delta = -2.0 * heading_error.sin() / (lookahead * self.steer_curvature)
+        moving = (speed_kmh >= self.min_speed_kmh)[..., None]
+        return delta * moving
+
     def rotate_labels(self, input: PyTree, psi: Tensor) -> PyTree:
-        """Rotate `trajectory_target` and `waypoints` by the `(b, t)` yaw `psi`.
+        """Rotate `trajectory_target` and `waypoints` by the `(b, t)` yaw `psi`,
+        and, when `steering` is set, add the recovery steering to its chunk.
 
         Unperturbed frames keep their labels bit-for-bit (the theta re-wrap is
         not exact at `psi = 0`).
+
+        Raises:
+            ValueError: if `steering` is set but no speed is found at `speed`.
         """
         perturbed = psi.ne(0)[..., None, None]
         output = input
@@ -180,6 +234,21 @@ class YawShiftCrop(Module):
             rotated = rotate_ego_frame(waypoints.float(), psi).to(waypoints.dtype)
             output = _assoc(
                 output, self._waypoints, torch.where(perturbed, rotated, waypoints)
+            )
+
+        path = self._steering
+        steering = None if path is None else _get(output, path)
+        if path is not None and steering is not None:
+            speed = _get(output, self._speed)
+            if speed is None:
+                msg = f"steering correction needs speed at {self._speed}"
+                raise ValueError(msg)
+            b, t, h = steering.shape
+            speed = speed.reshape(b, t, -1)[..., 0]
+            corrected = steering.float() + self.steering_correction(psi, speed, h)
+            corrected = corrected.clamp(-1.0, 1.0).to(steering.dtype)
+            output = _assoc(
+                output, path, torch.where(psi.ne(0)[..., None], corrected, steering)
             )
 
         return output

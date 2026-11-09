@@ -1,0 +1,16 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm_causal_readout_dropout_depth_anything_v2_r1b_r2
+  - _self_
+
+# R1b + R2 (the dfldy2ki arm) + the steering action chunk corrected for the
+# yaw shift. R1a/R1b rotate trajectory_target and waypoints but keep the
+# recorded steering, so the action head is told "drive as recorded" from an
+# off-heading view. Here YawShiftCrop adds the pure-pursuit steering that
+# brings the yawed car back onto the recorded path (fleet-pooled lateral fit,
+# 2 s lookahead, none below 5 km/h; see rmind.components.augment.YawShiftCrop).
+yaw_aug_steering: [continuous, steering_angle]
+
+wandb:
+  tags: [patch_policy, dinov2_dinowm_causal, neighbor_smoothing, readout_registers, retile, trajectory_head, mode_head, turn_signal_head, dropout, depth_anything_v2, yaw_aug, frame_mask, photometric, head_ln_gelu, yaw_aug_steer]
