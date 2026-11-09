@@ -1,0 +1,17 @@
+---
+# Open-loop prediction variant of W1 (rmind_zero with the TRAJECTORY head) on a recorded drive
+# (paired with config/inference/yaak/rmind_zero/W1.yaml).
+#
+# Unlike drahve, the input transform is kept as trained: the drive is cut into full training-length
+# clips (6 encoded frames + look-ahead), so TrajectoryTarget and the POLICY chunk have their future
+# and ground truth can be reported next to the predictions. FWD / INV are training-only and
+# dropped; the policy decodes deterministically.
+_target_: rmind.models.zero.Zero.load_from_wandb_artifact
+artifact: ???
+filename: model.ckpt
+map_location: cpu
+strict: false
+hparams_jq: |
+  del(.objectives.modules.forward_dynamics)
+  | del(.objectives.modules.inverse_dynamics)
+  | .objectives.modules.policy.sample_codes = false

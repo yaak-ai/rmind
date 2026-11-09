@@ -1,0 +1,112 @@
+# @package _global_
+---
+# Open-loop prediction of a W1 checkpoint (with the TRAJECTORY head) on a SINGLE drive:
+#   just predict inference=yaak/rmind_zero/W1 model.artifact=yaak/rmind/model-<id>:<v> drive_dir=/path/to/<drive>
+# The drive is cut into 16-frame clips (6 encoded + 10 look-ahead, as in training), so ground truth
+# exists for POLICY and TRAJECTORY; the last 15 frames of the drive get no prediction. Rerun: drahve's
+# panels plus a top-down `trajectory` panel with the GT (white) and predicted (orange) trajectory.
+defaults:
+  - /model: yaak/rmind_zero/W1_predict
+  - /datamodule: yaak/predict_drive
+  - /paths: yaak/default
+  - /logger: yaak/rerun/prediction_policy_zero
+  - _self_
+
+drive_dir: ???
+# episode_length 6 + trajectory look-ahead 10 (W1's clip_length)
+clip_length: 16
+
+# Fixed layout, one panel each: camera, trajectory (GT white + predicted orange, top-down, fixed
+# bounds), speed; predicted gas / brake / steering (all horizons per panel); GT gas / brake / steering;
+# predicted / GT turn signal. Own application id so a layout saved in the viewer is not reused.
+logger:
+  application_id: prediction_W1
+  blueprint:
+    _target_: rerun.blueprint.Blueprint
+    auto_views: false
+    _args_:
+      - _target_: rerun.blueprint.Grid
+        grid_columns: 3
+        _args_:
+          - _target_: rerun.blueprint.Spatial2DView
+            origin: batch/cam_front_left
+            visual_bounds:
+              _target_: rerun.blueprint.VisualBounds2D
+              x_range: [0, 576]
+              y_range: [0, 324]
+          - _target_: rerun.blueprint.Spatial2DView
+            name: trajectory (m)
+            origin: trajectory
+            # x -50..50 m, forward 0..150 m (drawn as -y), ego at the bottom centre
+            visual_bounds:
+              _target_: rerun.blueprint.VisualBounds2D
+              x_range: [-50, 50]
+              y_range: [-150, 0]
+          - _target_: rerun.blueprint.TimeSeriesView
+            origin: batch/meta/VehicleMotion/speed
+          - _target_: rerun.blueprint.TimeSeriesView
+            origin: prediction/policy/prediction_value/continuous/gas_pedal
+            # all predicted horizons h0..h5 in this one panel
+            contents: ["$origin/**"]
+          - _target_: rerun.blueprint.TimeSeriesView
+            origin: prediction/policy/prediction_value/continuous/brake_pedal
+            # all predicted horizons h0..h5 in this one panel
+            contents: ["$origin/**"]
+          - _target_: rerun.blueprint.TimeSeriesView
+            origin: prediction/policy/prediction_value/continuous/steering_angle
+            # all predicted horizons h0..h5 in this one panel
+            contents: ["$origin/**"]
+          - _target_: rerun.blueprint.TimeSeriesView
+            origin: batch/meta/VehicleMotion/gas_pedal_normalized
+          - _target_: rerun.blueprint.TimeSeriesView
+            origin: batch/meta/VehicleMotion/brake_pedal_normalized
+          - _target_: rerun.blueprint.TimeSeriesView
+            origin: batch/meta/VehicleMotion/steering_angle_normalized
+          - _target_: rerun.blueprint.TimeSeriesView
+            origin: prediction/policy/prediction_value/discrete/turn_signal
+            # all predicted horizons h0..h5 in this one panel
+            contents: ["$origin/**"]
+          - _target_: rerun.blueprint.TimeSeriesView
+            origin: batch/meta/VehicleState/turn_signal
+
+trainer:
+  _target_: pytorch_lightning.Trainer
+  _convert_: all
+  accelerator: gpu
+  devices: 1
+  benchmark: true
+  precision: "bf16-mixed"
+  logger: false
+  callbacks:
+    - _target_: rmind.callbacks.PredictionConfigSetter
+      config:
+        objectives: [prediction_value, ground_truth]
+
+    - _target_: rmind.callbacks.RerunPredictionWriter
+      write_interval: batch
+      logger: ${logger}
+
+    # draws into the RerunPredictionWriter's recordings (same logger instance)
+    - _target_: rmind.callbacks.RerunTrajectoryWriter
+      write_interval: batch
+
+    - _target_: rmind.callbacks.DataFramePredictionWriter
+      write_interval: batch
+      path: ${hydra:run.dir}/predictions/${oc.select:model.artifact,}/{batch_idx:06}.parquet
+      select:
+        - [batch, data, meta/ImageMetadata.cam_front_left/time_stamp]
+        - [batch, data, meta/ImageMetadata.cam_front_left/frame_idx]
+        - [batch, meta, input_id]
+        - [policy, prediction_value, value, continuous, gas_pedal]
+        - [policy, prediction_value, value, continuous, brake_pedal]
+        - [policy, prediction_value, value, continuous, steering_angle]
+        - [policy, prediction_value, value, discrete, turn_signal]
+        - [policy, prediction_value, value, codes]
+        - [trajectory, prediction_value, value, trajectory]
+        - [trajectory, ground_truth, value, trajectory]
+      writer:
+        _target_: polars.DataFrame.write_parquet
+        _partial_: true
+
+    - _target_: pytorch_lightning.callbacks.ModelSummary
+      max_depth: 3

@@ -12,6 +12,7 @@ from .predict_metrics import PredictMetricsCallback
 from .prediction import (
     DataFramePredictionWriter,
     RerunPredictionWriter,
+    RerunTrajectoryWriter,
     TensorDictPredictionWriter,
 )
 from .prediction_config import PredictionConfigSetter
@@ -25,6 +26,7 @@ __all__ = [
     "PredictMetricsCallback",
     "PredictionConfigSetter",
     "RerunPredictionWriter",
+    "RerunTrajectoryWriter",
     "SafeCallback",
     "TensorDictPredictionWriter",
     "WandbAttentionMaskLogger",

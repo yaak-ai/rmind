@@ -1064,10 +1064,53 @@ samples:
           _target_: rbyte.io.DataFrameConcater
           key_column: input_id
 
+      # Trajectory-length balancing: per window, the path length of the TRAJECTORY target (trapezoid integral
+      # of speed over the ${trajectory_horizon} steps after the last encoded frame, = the dead-reckoned arc
+      # length), in progressively wider bins (0-0.1 (standstill, incl. speed noise) / 0.1-1 / 1-5 / 5-10 / 10-20 / 20-40 / 40-80 / 80+ m), and
+      # meta/weight = (1 / bin_count)^alpha. Nothing is dropped: with
+      # datamodule=yaak/train_balanced, WeightedDataNodeDataLoader draws windows in proportion to meta/weight;
+      # yaak/train ignores it.
+      - _target_: pipefunc.PipeFunc
+        output_name: samples_balanced
+        func:
+          _target_: makefun.create_function
+          func_signature: "balance(*, samples_aggregated)"
+          func_impl:
+            _target_: rbyte.io.DuckDBDataFrameQuery
+            query: |
+              WITH lengths AS (
+                SELECT *,
+                  list_sum(list_transform(
+                    range(${oc.select:episode_length,6}, ${oc.select:episode_length,6} + ${oc.select:trajectory_horizon,10}),
+                    k -> ("meta/VehicleMotion/speed"[k] + "meta/VehicleMotion/speed"[k + 1]) / 2.0 / 3.6
+                         * (epoch_us("meta/ImageMetadata.cam_front_left/time_stamp"[k + 1])
+                            - epoch_us("meta/ImageMetadata.cam_front_left/time_stamp"[k])) / 1e6
+                  )) AS "meta/trajectory_length_m"
+                FROM samples_aggregated
+              ),
+              binned AS (
+                SELECT *,
+                  CASE
+                    WHEN "meta/trajectory_length_m" < 0.1 THEN 0
+                    WHEN "meta/trajectory_length_m" < 1 THEN 1
+                    WHEN "meta/trajectory_length_m" < 5 THEN 2
+                    WHEN "meta/trajectory_length_m" < 10 THEN 3
+                    WHEN "meta/trajectory_length_m" < 20 THEN 4
+                    WHEN "meta/trajectory_length_m" < 40 THEN 5
+                    WHEN "meta/trajectory_length_m" < 80 THEN 6
+                    ELSE 7
+                  END AS "meta/trajectory_length_bin"
+                FROM lengths
+              )
+              SELECT *,
+                pow(1.0 / COUNT(*) OVER (PARTITION BY "meta/trajectory_length_bin"),
+                    ${oc.select:trajectory_balance_alpha,0.5}) AS "meta/weight"
+              FROM binned
+
       - _target_: pipefunc.PipeFunc
         output_name: samples_with_id
         renames:
-          self: samples_aggregated
+          self: samples_balanced
         func:
           _target_: polars.DataFrame.with_row_index
           _partial_: true

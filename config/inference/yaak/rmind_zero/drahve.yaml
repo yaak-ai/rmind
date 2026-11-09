@@ -13,6 +13,8 @@ defaults:
   - _self_
 
 drive_dir: ???
+# 6 encoded frames + 1 (the frame the first predicted action belongs to)
+clip_length: 7
 
 trainer:
   _target_: pytorch_lightning.Trainer

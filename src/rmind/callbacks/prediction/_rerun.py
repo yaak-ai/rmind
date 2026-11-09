@@ -19,6 +19,10 @@ class RerunPredictionWriter(BasePredictionWriter):
         super().__init__(write_interval)
         self._logger = logger
 
+    @property
+    def logger(self) -> RerunLogger:
+        return self._logger
+
     @override
     def write_on_batch_end(
         self,

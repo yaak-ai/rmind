@@ -2,7 +2,8 @@
 
 defaults:
   - /model: yaak/rmind_zero/W1
-  - /datamodule: yaak/train
+  # batches uniform over TRAJECTORY length bins (meta/weight from the train dataset template)
+  - /datamodule: yaak/train_balanced
   - /trainer: default
   - /trainer/callbacks: pretrain_route  # no continuous/discrete embeddings in W1
   - /paths: yaak/default
@@ -22,6 +23,10 @@ episode_stride: 10
 policy_chunk_horizon: 7
 # TRAJECTORY head: 10 future poses (3.3 s) from the last encoded step
 trajectory_horizon: 10
+# trajectory-length balancing: meta/weight = (1 / bin_count)^alpha; 1.0 = every length bin equally likely in a
+# batch (0-0.1 / 0.1-1 / 1-5 / 5-10 / 10-20 / 20-40 / 40-80 / 80+ m; 0.1 m absorbs standstill speed noise; smallest
+# bin, 0.1-1 m, ~31k windows, drawn ~7.9x/epoch)
+trajectory_balance_alpha: 1.0
 # clip_horizon spans the longest look-ahead: episode_length=6 encoded steps + 10 future poses
 # need samples up to index 15 -> clip_length 16 (the policy chunk only uses the first 12)
 clip_horizon: 11

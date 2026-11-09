@@ -1,0 +1,32 @@
+---
+defaults:
+  - /dataset/yaak/train@train.dataset
+  - /dataset/yaak/val@val.dataset
+  - _self_
+
+_target_: rmind.datamodules.GenericDataModule
+train:
+  # trajectory-length balanced sampling: each epoch draws len(dataset) windows WITH REPLACEMENT in
+  # proportion to meta/weight (see the train dataset template), so rare lengths (fast driving, creeping)
+  # are oversampled and dominant ones (~45 km/h, standstill) undersampled; the epoch size is unchanged
+  _target_: rmind.io.weighted_loader.WeightedDataNodeDataLoader
+  weight_key: meta/weight
+  batch_size: 256
+  drop_last: true
+  collate_fn:
+    _target_: rbyte.types.Batch.to_dict
+    _partial_: true
+  pin_memory: true
+  num_workers: 8
+  method: thread
+
+val:
+  _target_: rbyte.dataloader.TorchDataNodeDataLoader
+  batch_size: 128
+  shuffle: true
+  collate_fn:
+    _target_: rbyte.types.Batch.to_dict
+    _partial_: true
+  pin_memory: true
+  num_workers: 2
+  method: thread
