@@ -21,3 +21,5 @@ prek.toml
 .rbyte_cache*
 __pycache__/
 *.pyc
+*.onnx
+.direnv/
