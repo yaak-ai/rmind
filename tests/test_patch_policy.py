@@ -5,6 +5,7 @@ teacher-forced offset semantics inherited from `JointPolicyObjective` (#258),
 and equivalence of the batched `_gather_offset` with the joint-policy original.
 """
 
+import math
 from typing import Any, cast, override
 
 import pytest
@@ -16,7 +17,11 @@ from torchvision.ops import MLP
 
 from rmind.components.base import Modality
 from rmind.components.containers import ModuleDict
-from rmind.components.loss import FocalLoss, WinnerTakesAllPoseLoss
+from rmind.components.loss import (
+    FocalLoss,
+    WinnerTakesAllPoseLoss,
+    winner_takes_all_pose_l1,
+)
 from rmind.components.nn import Embedding
 from rmind.components.norm import ImageNormalize, Scaler, UniformBinner
 from rmind.components.objectives.base import ObjectivePredictionKey
@@ -153,6 +158,8 @@ def _make_model(  # noqa: PLR0913
     # exercise the path -- the gate test below overrides it back to 0.0.
     trajectory_weight: float = 1.0,
     with_mode_head: bool = False,
+    num_trajectory_hypotheses: int = NUM_TRAJECTORY_HYPOTHESES,
+    trajectory_loss: Module | None = None,
     mode_weight: float = 1.0,
     speed_dropout: float = 0.0,
     goal_dropout: float = 0.0,
@@ -171,7 +178,9 @@ def _make_model(  # noqa: PLR0913
     if turn_signal_head:
         default_loss_modules["turn_signal"] = torch.nn.CrossEntropyLoss()
     if with_trajectory_head:
-        default_loss_modules["trajectory"] = WinnerTakesAllPoseLoss()
+        default_loss_modules["trajectory"] = (
+            trajectory_loss if trajectory_loss is not None else WinnerTakesAllPoseLoss()
+        )
     if with_mode_head:
         default_loss_modules["mode"] = torch.nn.CrossEntropyLoss()
     return PatchPolicy(
@@ -207,13 +216,13 @@ def _make_model(  # noqa: PLR0913
         if turn_signal_head
         else None,
         trajectory_head=(
-            MLP(POLICY_DIM, [16, NUM_TRAJECTORY_HYPOTHESES * TRAJECTORY_HORIZON * 3])
+            MLP(POLICY_DIM, [16, num_trajectory_hypotheses * TRAJECTORY_HORIZON * 3])
             if with_trajectory_head
             else None
         ),
-        num_trajectory_hypotheses=NUM_TRAJECTORY_HYPOTHESES,
+        num_trajectory_hypotheses=num_trajectory_hypotheses,
         trajectory_weight=trajectory_weight,
-        mode_head=MLP(POLICY_DIM, [16, NUM_TRAJECTORY_HYPOTHESES])
+        mode_head=MLP(POLICY_DIM, [16, num_trajectory_hypotheses])
         if with_mode_head
         else None,
         mode_weight=mode_weight,
@@ -1558,3 +1567,141 @@ def test_dropout_without_null_token_raises() -> None:
 
     with pytest.raises(ValueError, match="goal_dropout"):
         _make_model(goal_dropout=0.5, nulls=False)
+
+
+# trajectory-mode-count DOE prerequisites (docs/trajectory_mode_count_doe.md)
+
+
+def test_wta_components_use_the_module_weights() -> None:
+    """Regression: the logged winner / mode label must use the loss module's
+    xy_weight, not the 0.01 default. Candidate 0 errs only in heading,
+    candidate 1 only in xy, so the two weightings disagree on the winner.
+    """
+    target = torch.zeros(1, 1, 3)  # (batch, poses, xyt)
+    pred = torch.zeros(1, 2, 1, 3)  # (batch, Q, poses, xyt)
+    pred[0, 0, 0, 2] = math.radians(10.0)  # cand 0: 0 m, 10 deg
+    pred[0, 1, 0, 0] = 2.0  # cand 1: 2 m, 0 deg
+    # dfldy2ki's weights: cand 0 costs 0.5 * 10 = 5, cand 1 costs 4.0 * 2 = 8
+    xy_heavy = WinnerTakesAllPoseLoss(xy_weight=4.0, heading_weight=0.5)
+    # the old bug's effective weights: cand 0 still 5, cand 1 0.01 * 2 = 0.02
+    default_xy = WinnerTakesAllPoseLoss(heading_weight=0.5)
+
+    _, best_xy_heavy, *_ = xy_heavy.components(pred, target)
+    _, best_default_xy, *_ = default_xy.components(pred, target)
+    assert best_xy_heavy.item() == 0
+    assert best_default_xy.item() == 1
+
+
+def test_mode_label_matches_the_optimized_loss_winner() -> None:
+    loss = WinnerTakesAllPoseLoss(xy_weight=4.0, heading_weight=0.5)
+    model = _make_model(
+        with_trajectory_head=True, with_mode_head=True, trajectory_loss=loss
+    )
+    batch = _make_batch(with_trajectory_target=True)
+
+    mode_stats: dict[str, Tensor] = {}
+    torch.manual_seed(0)
+    model._compute_metrics(batch, mode_stats_out=mode_stats)  # noqa: SLF001
+
+    torch.manual_seed(0)
+    features, _ = model._features(batch)  # noqa: SLF001
+    pred = model._predict_trajectory(features)  # noqa: SLF001
+    _, expected, _ = winner_takes_all_pose_l1(
+        pred, batch["context"]["trajectory_target"], xy_weight=4.0, heading_weight=0.5
+    )
+    torch.testing.assert_close(mode_stats["best_index"], expected)
+    assert "selected_index" in mode_stats
+
+
+def test_trajectory_head_requires_a_wta_loss() -> None:
+    with pytest.raises(ValueError, match="WinnerTakesAllPoseLoss"):
+        _make_model(with_trajectory_head=True, trajectory_loss=L1Loss())
+
+
+def test_selected_trajectory_metrics_with_mode_head() -> None:
+    model = _make_model(with_trajectory_head=True, with_mode_head=True)
+    metrics = model._compute_metrics(  # noqa: SLF001
+        _make_batch(with_trajectory_target=True)
+    )
+    readout_metrics = cast("dict[str, Tensor]", metrics["policy", "metric"])
+    for key in (
+        "trajectory_selected_xy",
+        "trajectory_selected_heading",
+        "trajectory_selected_fde_xy",
+        "trajectory_selected_xy_last",
+        "trajectory_selected_fde_xy_last",
+        "trajectory_oracle_fde_xy",
+        "mode_nll",
+    ):
+        assert readout_metrics[key].isfinite(), key
+    # the served pick can never beat the oracle
+    assert readout_metrics["trajectory_selected_xy"] >= (
+        readout_metrics["trajectory_loss_xy"] - 1e-6
+    )
+
+
+def test_single_hypothesis_selected_equals_oracle() -> None:
+    """K=1 (the DOE's unimodal control): no mode head, and the served
+    trajectory IS the oracle one."""
+    model = _make_model(with_trajectory_head=True, num_trajectory_hypotheses=1)
+    mode_stats: dict[str, Tensor] = {}
+    metrics = model._compute_metrics(  # noqa: SLF001
+        _make_batch(with_trajectory_target=True), mode_stats_out=mode_stats
+    )
+    readout_metrics = cast("dict[str, Tensor]", metrics["policy", "metric"])
+    torch.testing.assert_close(
+        readout_metrics["trajectory_selected_xy"], readout_metrics["trajectory_loss_xy"]
+    )
+    torch.testing.assert_close(
+        readout_metrics["trajectory_selected_fde_xy"],
+        readout_metrics["trajectory_oracle_fde_xy"],
+    )
+    assert "mode_nll" not in readout_metrics
+    assert (mode_stats["best_index"] == 0).all()
+    assert "selected_index" not in mode_stats
+
+    predictions = model.predict_step(_make_batch(with_trajectory_target=True))
+    assert predictions["trajectory", "prediction"].shape[1] == 1
+
+
+def test_selected_metrics_absent_without_a_served_pick() -> None:
+    """K>1 without a mode head has no served hypothesis to score."""
+    model = _make_model(with_trajectory_head=True)
+    metrics = model._compute_metrics(  # noqa: SLF001
+        _make_batch(with_trajectory_target=True)
+    )
+    readout_metrics = cast("dict[str, Tensor]", metrics["policy", "metric"])
+    assert "trajectory_selected_xy" not in readout_metrics
+
+
+def test_mode_usage_metrics() -> None:
+    model = _make_model(with_trajectory_head=True, with_mode_head=True)
+    # K=3: mode 2 never wins -> one dead mode
+    model._accumulate_mode_stats(  # noqa: SLF001
+        {
+            "best_index": torch.tensor([[0, 0, 0], [1, 0, 1]]),
+            "selected_index": torch.tensor([[0, 0, 1], [1, 1, 1]]),
+        }
+    )
+    assert model._val_mode_wins is not None  # noqa: SLF001
+    out = model._mode_usage_metrics(  # noqa: SLF001
+        model._val_mode_wins,  # noqa: SLF001
+        model._val_mode_correct,  # noqa: SLF001
+    )
+    torch.testing.assert_close(out["mode_win_rate/0"], torch.tensor(4 / 6))
+    torch.testing.assert_close(out["mode_win_rate/2"], torch.tensor(0.0))
+    assert out["mode_dead_count"].item() == 1
+    torch.testing.assert_close(out["mode_majority_rate"], torch.tensor(4 / 6))
+    torch.testing.assert_close(out["mode_accuracy_epoch"], torch.tensor(4 / 6))
+    torch.testing.assert_close(out["mode_accuracy_lift"], torch.tensor(0.0))
+    p = torch.tensor([4 / 6, 2 / 6])
+    expected_entropy = -(p * p.log()).sum() / math.log(3)
+    torch.testing.assert_close(out["mode_usage_entropy_norm"], expected_entropy)
+
+
+def test_mode_usage_metrics_single_hypothesis() -> None:
+    model = _make_model(with_trajectory_head=True, num_trajectory_hypotheses=1)
+    out = model._mode_usage_metrics(torch.tensor([10]), None)  # noqa: SLF001
+    assert "mode_usage_entropy_norm" not in out
+    assert "mode_accuracy_lift" not in out
+    assert out["mode_dead_count"].item() == 0

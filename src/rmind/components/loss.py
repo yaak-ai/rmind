@@ -297,6 +297,30 @@ def winner_takes_all_pose_l1_components(
     return loss, best_index, per_candidate, winner_xy_loss, winner_heading_loss
 
 
+def pose_errors_at(
+    input: Tensor, target: Tensor, index: Tensor
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Unweighted errors of ONE chosen candidate per sample, e.g. the mode
+    head's argmax pick rather than the oracle winner.
+
+    Args:
+        input: `(*batch, Q, P, 3)` candidate poses.
+        target: `(*batch, P, 3)` ground-truth poses.
+        index: `(*batch,)` integer index into `Q`.
+
+    Returns:
+        `(xy, heading, final_xy)`, each `(*batch,)`: mean-over-poses xy L1
+        (meters), mean-over-poses wrapped heading error (degrees), and the
+        xy L1 of the last pose (meters, the FDE analogue).
+    """
+    xy_err, heading_err = _per_candidate_pose_errors(input, target)
+    gather_index = index.unsqueeze(-1)
+    xy = xy_err.mean(dim=-1).gather(-1, gather_index).squeeze(-1)
+    heading = heading_err.mean(dim=-1).gather(-1, gather_index).squeeze(-1)
+    final_xy = xy_err[..., -1].gather(-1, gather_index).squeeze(-1)
+    return xy, heading, final_xy
+
+
 class WinnerTakesAllPoseLoss(Module):
     """`losses: ModuleDict` wrapper around `winner_takes_all_pose_l1` -- see
     that function for the loss definition. `input`/`target` combine `(x, y,
@@ -328,3 +352,18 @@ class WinnerTakesAllPoseLoss(Module):
             reduction=self.reduction,
         )
         return loss
+
+    def components(
+        self, input: Tensor, target: Tensor
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+        """`winner_takes_all_pose_l1_components` with THIS module's weights,
+        so diagnostics and the mode head's `best_index` label pick the same
+        winner as `forward` does.
+        """
+        return winner_takes_all_pose_l1_components(
+            input,
+            target,
+            xy_weight=self.xy_weight,
+            heading_weight=self.heading_weight,
+            reduction=self.reduction,
+        )

@@ -1,3 +1,4 @@
+import math
 from collections.abc import Mapping
 from itertools import chain
 from typing import Annotated, Any, ClassVar, cast, final, override
@@ -17,10 +18,7 @@ from torch.utils.checkpoint import checkpoint
 
 from rmind.components import optimizers
 from rmind.components.containers import ModuleDict
-from rmind.components.loss import (
-    winner_takes_all_pose_l1,
-    winner_takes_all_pose_l1_components,
-)
+from rmind.components.loss import WinnerTakesAllPoseLoss, pose_errors_at
 from rmind.components.objectives.base import ObjectivePredictionKey, Prediction
 from rmind.config import HydraConfig, init_hydra_param
 from rmind.models.action_tokenizer import LRSchedulerHydraConfig
@@ -361,10 +359,15 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.trajectory_head: Module | None = init_hydra_param(
             hparams, "trajectory_head", trajectory_head
         )
-        if self.trajectory_head is not None and "trajectory" not in self.losses:
+        if self.trajectory_head is not None and not isinstance(
+            self.losses.get("trajectory", default=None), WinnerTakesAllPoseLoss
+        ):
+            # must be WinnerTakesAllPoseLoss specifically: its `components()`
+            # is what keeps the logged winner and mode_head's best_index label
+            # on the SAME xy/heading weighting as the optimized loss
             msg = (
-                "trajectory_head requires losses['trajectory'] (e.g. "
-                "rmind.components.loss.WinnerTakesAllPoseLoss) to supervise it"
+                "trajectory_head requires losses['trajectory'] to be a "
+                "rmind.components.loss.WinnerTakesAllPoseLoss to supervise it"
             )
             raise ValueError(msg)
         self.mode_head: Module | None = init_hydra_param(
@@ -509,6 +512,11 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.lr_scheduler: LRSchedulerHydraConfig | None = lr_scheduler
 
         self.prediction_config = prediction_config
+
+        # val-epoch trajectory-mode accumulators (see _accumulate_mode_stats);
+        # plain attributes, NOT buffers, so checkpoints are unchanged
+        self._val_mode_wins: Tensor | None = None
+        self._val_mode_correct: Tensor | None = None
 
         self.save_hyperparameters(hparams)
 
@@ -1023,8 +1031,21 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         return losses
 
     def _compute_metrics(  # noqa: PLR0914
-        self, batch: Any, *, token_norms: dict[str, Tensor] | None = None
+        self,
+        batch: Any,
+        *,
+        token_norms: dict[str, Tensor] | None = None,
+        mode_stats_out: dict[str, Tensor] | None = None,
     ) -> TensorDict:
+        """`mode_stats_out` (out-parameter, like `token_norms`): when given and
+        the trajectory head is on, filled with `"best_index"` (oracle winner,
+        `(b, t)`) and, with a mode head, `"selected_index"` (its argmax) --
+        what `_accumulate_mode_stats` turns into epoch-level usage metrics.
+
+        Raises:
+            RuntimeError: if offsets are not teacher-forced and no sampled
+                chunk was decoded (unreachable by construction).
+        """
         turn_signal_chunk: dict[str, Tensor] = {}
         trajectory_target_out: dict[str, Tensor] = {}
         features, chunk = self._features(
@@ -1132,7 +1153,64 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                 (mode_logits.argmax(dim=-1) == best_index).float().mean()
             )
 
+        if trajectory_pred is not None and trajectory_target is not None:
+            self._selected_trajectory_metrics(
+                metrics,
+                trajectory_pred=trajectory_pred,
+                trajectory_target=trajectory_target,
+                best_index=best_index_out["best_index"],
+                mode_logits=mode_logits,
+                mode_stats_out=mode_stats_out,
+            )
+
         return TensorDict({"policy": {"loss": losses, "metric": metrics}})
+
+    @torch.no_grad()
+    def _selected_trajectory_metrics(  # noqa: PLR0913
+        self,
+        metrics: dict[str, Tensor],
+        *,
+        trajectory_pred: Tensor,
+        trajectory_target: Tensor,
+        best_index: Tensor,
+        mode_logits: Tensor | None,
+        mode_stats_out: dict[str, Tensor] | None,
+    ) -> None:
+        """Metrics that stay comparable across `num_trajectory_hypotheses`.
+
+        The oracle metrics (`trajectory_loss_*`) take the best of K and so
+        improve with K by construction. These score the hypothesis that would
+        actually be SERVED: the mode head's argmax, or the only hypothesis when
+        K == 1 (where no mode head is needed). With K > 1 and no mode head
+        there is no served pick, so no selected-mode metric is logged.
+        """
+        selected_index: Tensor | None = None
+        if mode_logits is not None:
+            selected_index = mode_logits.argmax(dim=-1)
+            metrics["mode_nll"] = F.cross_entropy(
+                rearrange(mode_logits.float(), "b t q -> (b t) q"),
+                rearrange(best_index, "b t -> (b t)"),
+            )
+        elif self.num_trajectory_hypotheses == 1:
+            selected_index = torch.zeros_like(best_index)
+
+        if mode_stats_out is not None:
+            mode_stats_out["best_index"] = best_index
+            if mode_logits is not None and selected_index is not None:
+                mode_stats_out["selected_index"] = selected_index
+
+        if selected_index is None:
+            return
+
+        xy, heading, final_xy = pose_errors_at(
+            trajectory_pred, trajectory_target, selected_index
+        )
+        metrics["trajectory_selected_xy"] = xy.mean()
+        metrics["trajectory_selected_heading"] = heading.mean()
+        metrics["trajectory_selected_fde_xy"] = final_xy.mean()
+        # deployed readout only (newest frame), like the other *_last metrics
+        metrics["trajectory_selected_xy_last"] = xy[:, -1].mean()
+        metrics["trajectory_selected_fde_xy_last"] = final_xy[:, -1].mean()
 
     def _readout_metrics(  # noqa: C901, PLR0913
         self,
@@ -1240,19 +1318,26 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             # losses["trajectory"], so they stay comparable across a
             # trajectory_weight sweep.
             if trajectory_pred is not None and trajectory_target is not None:
-                trajectory_loss_module = self.losses["trajectory"]
+                # the loss module's OWN weights (via components()), so this
+                # winner -- and thus mode_head's label -- is the one the
+                # optimized loss picks. (Previously xy_weight was not passed
+                # and silently fell back to the 0.01 default.)
+                trajectory_loss_module = cast(
+                    "WinnerTakesAllPoseLoss", self.losses["trajectory"]
+                )
                 _, best_index, _, xy_loss, heading_loss = (
-                    winner_takes_all_pose_l1_components(
-                        trajectory_pred,
-                        trajectory_target,
-                        heading_weight=getattr(
-                            trajectory_loss_module, "heading_weight", 0.1
-                        ),
-                        reduction=getattr(trajectory_loss_module, "reduction", "mean"),
+                    trajectory_loss_module.components(
+                        trajectory_pred, trajectory_target
                     )
                 )
+                # oracle (best-of-K) errors: improve with K by construction,
+                # so they bound but do not rank a K sweep -- see the
+                # trajectory_selected_* metrics in _compute_metrics for that
                 metrics["trajectory_loss_xy"] = xy_loss.mean()
                 metrics["trajectory_loss_heading"] = heading_loss.mean()
+                metrics["trajectory_oracle_fde_xy"] = pose_errors_at(
+                    trajectory_pred, trajectory_target, best_index
+                )[2].mean()
                 metrics["trajectory_best_index_unique_frac"] = torch.tensor(
                     best_index.unique().numel() / best_index.numel(),
                     device=best_index.device,
@@ -1291,10 +1376,16 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
     def _step(self, batch: Any, prefix: str) -> STEP_OUTPUT:
         token_norms: dict[str, Tensor] = {}
+        mode_stats: dict[str, Tensor] = {}
         # Optional profiling: set environment variable `TORCH_PROFILER` to enable.
         # If `TORCH_PROFILER_DIR` is set, a chrome trace will be written there.
         with maybe_profile(f"{prefix}_step"):
-            metrics = self._compute_metrics(batch, token_norms=token_norms)
+            metrics = self._compute_metrics(
+                batch, token_norms=token_norms, mode_stats_out=mode_stats
+            )
+
+        if prefix == "val" and mode_stats:
+            self._accumulate_mode_stats(mode_stats)
 
         losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # noqa: SIM118
         metrics["loss", "total"] = losses.sum(reduce=True)
@@ -1322,6 +1413,78 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             )
 
         return {"loss": metrics["loss", "total"]}
+
+    @torch.no_grad()
+    def _accumulate_mode_stats(self, mode_stats: dict[str, Tensor]) -> None:
+        best_index = mode_stats["best_index"]
+        wins = torch.bincount(
+            best_index.flatten(), minlength=self.num_trajectory_hypotheses
+        )
+        self._val_mode_wins = (
+            wins if self._val_mode_wins is None else self._val_mode_wins + wins
+        )
+        if (selected_index := mode_stats.get("selected_index")) is not None:
+            correct = (selected_index == best_index).sum()
+            self._val_mode_correct = (
+                correct
+                if self._val_mode_correct is None
+                else self._val_mode_correct + correct
+            )
+
+    def _mode_usage_metrics(
+        self, wins: Tensor, correct: Tensor | None
+    ) -> dict[str, Tensor]:
+        """Epoch-level trajectory-mode usage from the oracle winner histogram
+        `wins` (`(K,)` counts) and the mode head's `correct` count.
+
+        Per-batch metrics such as `trajectory_best_index_unique_frac` cannot
+        see collapse across the epoch (and depend on batch size); these can.
+        `mode_accuracy_lift` is accuracy over always predicting the most
+        frequent winner, the honest baseline when usage is skewed (1/K is not).
+        """
+        num_modes = self.num_trajectory_hypotheses
+        total = wins.sum().clamp_min(1)
+        win_rate = wins.double() / total
+        out: dict[str, Tensor] = {
+            f"mode_win_rate/{k}": win_rate[k] for k in range(num_modes)
+        }
+        majority = win_rate.max()
+        out["mode_majority_rate"] = majority
+        out["mode_dead_count"] = (win_rate < 1.0 / (10 * num_modes)).sum().double()
+        if num_modes > 1:
+            entropy = -(win_rate * win_rate.clamp_min(1e-12).log()).sum()
+            out["mode_usage_entropy_norm"] = entropy / math.log(num_modes)
+        if correct is not None:
+            accuracy = correct.double() / total
+            out["mode_accuracy_epoch"] = accuracy
+            out["mode_accuracy_lift"] = accuracy - majority
+        return {k: v.float() for k, v in out.items()}
+
+    @override
+    def on_validation_epoch_start(self) -> None:
+        self._val_mode_wins = None
+        self._val_mode_correct = None
+
+    @override
+    def on_validation_epoch_end(self) -> None:
+        wins, correct = self._val_mode_wins, self._val_mode_correct
+        self._val_mode_wins = None
+        self._val_mode_correct = None
+        if wins is None or self.trainer.sanity_checking:
+            return
+        # sum counts across ranks BEFORE forming rates (averaging per-rank
+        # rates would weight ranks equally regardless of sample count)
+        strategy = self.trainer.strategy
+        wins = strategy.reduce(wins, reduce_op="sum")
+        if correct is not None:
+            correct = strategy.reduce(correct, reduce_op="sum")
+        self.log_dict(
+            {
+                f"val/policy/metric/{k}": v
+                for k, v in self._mode_usage_metrics(wins, correct).items()
+            },
+            sync_dist=False,  # already reduced above
+        )
 
     @override
     def training_step(self, batch: dict[str, Any], _batch_idx: int) -> STEP_OUTPUT:
@@ -1534,12 +1697,11 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         if self.trajectory_head is not None:
             trajectory_target = trajectory_target_out["trajectory_target"]
             trajectory_pred = self._predict_trajectory(features)  # (b, q, p, 3)
-            trajectory_loss_module = self.losses["trajectory"]
-            _, best_index, per_candidate_loss = winner_takes_all_pose_l1(
-                trajectory_pred,
-                trajectory_target[:, -1],
-                heading_weight=getattr(trajectory_loss_module, "heading_weight", 0.1),
-                reduction=getattr(trajectory_loss_module, "reduction", "mean"),
+            trajectory_loss_module = cast(
+                "WinnerTakesAllPoseLoss", self.losses["trajectory"]
+            )
+            _, best_index, per_candidate_loss, _, _ = trajectory_loss_module.components(
+                trajectory_pred, trajectory_target[:, -1]
             )
             best_prediction = trajectory_pred.gather(
                 1,

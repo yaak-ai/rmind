@@ -1,0 +1,37 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm_causal_readout_dropout_depth_anything_v2_r1b_r2_modes
+  - _self_
+
+# Mode-count DOE, K=1 arm: the unimodal control (docs/trajectory_mode_count_doe.md).
+# With one hypothesis, winner-takes-all reduces to plain pose L1, and a mode
+# classifier has nothing to choose between (its CE would be identically 0),
+# so mode_head is switched off. The served trajectory is then the single
+# hypothesis, which is what trajectory_selected_* scores.
+
+num_trajectory_hypotheses: 1
+
+model:
+  mode_head: null
+
+wandb:
+  tags:
+    [
+      patch_policy,
+      dinov2_dinowm_causal,
+      neighbor_smoothing,
+      readout_registers,
+      retile,
+      trajectory_head,
+      turn_signal_head,
+      dropout,
+      depth_anything_v2,
+      traj_priority,
+      yaw_aug,
+      frame_mask,
+      photometric,
+      head_ln_gelu,
+      mode_count_doe,
+      "K${num_trajectory_hypotheses}",
+    ]

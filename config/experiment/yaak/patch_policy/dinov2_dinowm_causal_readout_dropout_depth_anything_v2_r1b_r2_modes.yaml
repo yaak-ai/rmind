@@ -1,0 +1,62 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm_causal_readout_dropout_depth_anything_v2_r1b_r2
+  - _self_
+
+# Trajectory mode-count DOE base (docs/trajectory_mode_count_doe.md).
+# Bakes in the hyperparameter overrides that baseline run
+# yaak/alex-tmp/dfldy2ki passed on its command line, so each arm of the sweep
+# differs from this file ONLY in num_trajectory_hypotheses (and, for K=1, the
+# mode head). As-is this file is the K=5 control arm.
+# Infra-only overrides (dataloader workers, sample-cache resume, rbyte cache
+# path, wandb project) stay on the launch command line -- see the doc.
+
+num_trajectory_hypotheses: 5
+
+trajectory_weight: 1.0
+trajectory_xy_weight: 4.0
+trajectory_heading_weight: 0.5
+mode_weight: 0.2
+
+speed_dropout: 0.1
+goal_dropout: 0.1
+
+window: 2
+episode_length: 16
+episode_stride: 17
+
+lr: 2e-4
+lr_warmup_steps: 17200
+lr_total_steps: 215000
+
+datamodule:
+  train:
+    batch_size: 48
+  val:
+    batch_size: 48
+
+model:
+  neighbor_smoothing_tau: 0.012
+
+wandb:
+  tags:
+    [
+      patch_policy,
+      dinov2_dinowm_causal,
+      neighbor_smoothing,
+      readout_registers,
+      retile,
+      trajectory_head,
+      mode_head,
+      turn_signal_head,
+      dropout,
+      depth_anything_v2,
+      traj_priority,
+      yaw_aug,
+      frame_mask,
+      photometric,
+      head_ln_gelu,
+      mode_count_doe,
+      "K${num_trajectory_hypotheses}",
+    ]
