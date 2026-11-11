@@ -41,6 +41,17 @@ proxy efficacy and failed 5 Hz walker competence gates. It is not deployment
 certification. The generic Hydra scaffold inherits its camera/data selection;
 it is not the exact fork-only launcher recipe.
 
+The launcher also accepts a 3-camera baseline (any layout in
+`d12_fm_config.CAMERA_LAYOUTS`) and keeps its cameras; the run is named
+`d12-rtc-native-<layout>-h50-fp32`. Pass `--checkpoint` when the baseline's
+step-35000 checkpoint is not `checkpoints/epoch=5-step=35000.ckpt`. Run the
+phases in order: `prepare`, `smoke`, then `train`.
+
+```sh
+python -m rmind.scripts.train_d12_rtc --baseline FORWARD_3CAM_RUN \
+  --run-dir NEW_DIRECTORY --phase prepare
+```
+
 ```sh
 just generate-config
 python -m rmind.scripts.train_d12_rtc --help

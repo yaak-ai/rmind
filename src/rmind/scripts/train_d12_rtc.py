@@ -1,4 +1,8 @@
-"""Launch the experimental native D12 RTC head from an audited fork-only baseline."""
+"""Launch the experimental native D12 RTC head from an audited flow-matching baseline.
+
+The baseline may use any camera layout in `CAMERA_LAYOUTS` (fork-only, or the fork plus the
+forward or backward side pair); the RTC run keeps its cameras.
+"""
 
 import argparse
 import hashlib
@@ -19,6 +23,7 @@ from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 
 from rmind.models.patch_policy_continuous import PatchPolicyContinuous
+from rmind.scripts.d12_fm_config import CAMERA_LAYOUTS
 
 if TYPE_CHECKING:
     from rmind.components.rtc_flow_head import TokenTimeFlowHead
@@ -54,13 +59,20 @@ class SmokeCheckpointQuarantine(pl.Callback):
         }
 
 
+def camera_layout(config: DictConfig) -> str:
+    cameras = tuple(config.model.cameras)
+    for layout, layout_cameras in CAMERA_LAYOUTS.items():
+        if cameras == layout_cameras:
+            return layout
+    msg = f"The baseline cameras {list(cameras)} are not a D12 camera layout"
+    raise ValueError(msg)
+
+
 def build_config(baseline: Path, directory: Path) -> DictConfig:
     config = cast("DictConfig", OmegaConf.load(baseline / "resolved.yaml"))
-    if (
-        list(config.model.cameras) != ["cam_fork"]
-        or config.model.action_horizon != ACTION_HORIZON
-    ):
-        msg = "The baseline must be fork-only H50"
+    layout = camera_layout(config)
+    if config.model.action_horizon != ACTION_HORIZON:
+        msg = "The baseline must be H50"
         raise ValueError(msg)
     if (
         len(config.datamodule.train.dataset.samples.inputs.job_dir) != TRAIN_JOB_COUNT
@@ -90,17 +102,24 @@ def build_config(baseline: Path, directory: Path) -> DictConfig:
     config.trainer.logger.save_dir = str(directory)
     config.trainer.callbacks[1].dirpath = str(directory / "checkpoints")
     config.paths.rbyte.cache = str(directory / "rbyte_cache")
-    config.wandb.name = "d12-rtc-native-fork-h50-fp32"
+    config.wandb.name = f"d12-rtc-native-{layout}-h50-fp32"
     config.wandb.tags += [
-        "training_time_rtc",
-        "native_time_embedding",
-        "fp32",
-        "experimental_not_deployed",
+        tag
+        for tag in (
+            "training_time_rtc",
+            "native_time_embedding",
+            "fp32",
+            "experimental_not_deployed",
+            f"camera_layout:{layout}",
+        )
+        if tag not in config.wandb.tags
     ]
     config.wandb.notes = (
-        "Experimental native token-time RTC: fork-only, original34train/4val jobs, "
+        f"Experimental native token-time RTC: {layout} cameras "
+        f"{list(config.model.cameras)}, original34train/4val jobs, "
         "30Hz H50 actions,6-frame history at5Hz, height+missing mask, no subgoals. "
-        "Compatible vision/trunk/state weights from ptktynvw step35000; fresh RTC head. "
+        f"Compatible vision/trunk/state weights from baseline {baseline.name}; "
+        "fresh RTC head. "
         "Native analytical time encoding, no external vector/JAX runtime. "
         "Prefix0..6 sampled proportional exp(-length);5 Euler steps. "
         "FP32/noTF32, frozenDINO, originalAdamW betas/decay and35k warmup/cosine, lr3e-5. "
@@ -410,9 +429,16 @@ def main() -> None:
     parser.add_argument("--baseline", type=Path, required=True)
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--phase", choices=("prepare", "smoke", "train"), required=True)
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        help="Baseline checkpoint (default: checkpoints/epoch=5-step=35000.ckpt under it)",
+    )
     args = parser.parse_args()
     directory = args.run_dir.resolve()
-    checkpoint = args.baseline / "checkpoints/epoch=5-step=35000.ckpt"
+    checkpoint = (
+        args.checkpoint or args.baseline / "checkpoints/epoch=5-step=35000.ckpt"
+    )
     torch.set_float32_matmul_precision("highest")
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
