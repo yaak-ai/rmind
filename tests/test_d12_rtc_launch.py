@@ -8,6 +8,7 @@ from omegaconf import DictConfig, OmegaConf
 from torch import nn
 
 from rmind.components.rtc_flow_head import TokenTimeFlowHead
+from rmind.scripts.d12_fm_config import CAMERA_LAYOUTS
 from rmind.scripts.export_d12_fm import checkpoint_export_safety
 from rmind.scripts.train_d12_rtc import (
     SmokeCheckpointQuarantine,
@@ -166,11 +167,27 @@ def test_config_rejects_wrong_baseline(
         split = "train" if failure == "train_split" else "val"
         config.datamodule[split].dataset.samples.inputs.job_dir.pop()
     OmegaConf.save(config, baseline / "resolved.yaml")
-    message = (
-        "fork-only H50" if failure in {"cameras", "horizon"} else "whole-job split"
+    message = {"cameras": "not a D12 camera layout", "horizon": "must be H50"}.get(
+        failure, "whole-job split"
     )
     with pytest.raises(ValueError, match=message):
         build_config(baseline, baseline / "output")
+
+
+@pytest.mark.parametrize("layout", sorted(CAMERA_LAYOUTS))
+def test_config_keeps_the_baseline_camera_layout(
+    baseline_config: tuple[Path, DictConfig], layout: str
+) -> None:
+    baseline, config = baseline_config
+    config.model.cameras = list(CAMERA_LAYOUTS[layout])
+    config.wandb.tags.append(f"camera_layout:{layout}")
+    OmegaConf.save(config, baseline / "resolved.yaml")
+    built = build_config(baseline, baseline / "output")
+    assert list(built.model.cameras) == list(CAMERA_LAYOUTS[layout])
+    assert built.wandb.name == f"d12-rtc-native-{layout}-h50-fp32"
+    assert list(built.wandb.tags).count(f"camera_layout:{layout}") == 1
+    assert str(list(CAMERA_LAYOUTS[layout])) in built.wandb.notes
+    assert baseline.name in built.wandb.notes
 
 
 class TinyPolicy(nn.Module):
