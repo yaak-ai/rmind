@@ -104,9 +104,9 @@ out. **The ring buffer lives in the host, not the graph.** No in-graph scatter, 
 `ScatterElements` in TRT, and the cache is ordinary engine I/O. Between ticks the
 host shifts by one frame block and writes 257 tokens per layer.
 
-ONNX input names (`torch.export` flattens the `Mapping` argument):
-`inputs_image`, `inputs_speed`, `inputs_waypoints`, `inputs_past_k`,
-`inputs_past_v`, `inputs_cache_bias`, `inputs_rope_cos`, `inputs_rope_sin`.
+ONNX input names (explicitly set from the `Mapping` keys):
+`image`, `speed`, `waypoints`, `past_k`,
+`past_v`, `cache_bias`, `rope_cos`, `rope_sin`.
 Outputs: `policy.joint_actions`, `new_k`, `new_v`.
 
 Two silent-failure hazards on the drivr side:
@@ -224,12 +224,12 @@ leaves the 333 ms tick at 64 frames (§9) while still using only an eighth of RA
 
 ```python
 # --- once, at engine load: the graph is the authority on every cache dimension
-for name in ("inputs_past_k", "inputs_past_v", "inputs_cache_bias",
-             "inputs_rope_cos", "inputs_rope_sin", "new_k", "new_v"):
+for name in ("past_k", "past_v", "cache_bias",
+             "rope_cos", "rope_sin", "new_k", "new_v"):
     expected = tuple(engine.get_tensor_shape(name))
     if tuple(buffers[name].shape) != expected:      # set_tensor_address does NOT check
         raise ValueError(f"{name}: engine wants {expected}, got {buffers[name].shape}")
-_, layers, heads, cache_tokens, head_dim = engine.get_tensor_shape("inputs_past_k")
+_, layers, heads, cache_tokens, head_dim = engine.get_tensor_shape("past_k")
 tokens_per_frame = engine.get_tensor_shape("new_k")[3]      # 257
 cache_frames = cache_tokens // tokens_per_frame             # context - 1
 
@@ -439,7 +439,7 @@ episode.
    window trains a narrower context than will be served), but **nothing prevents
    serving a checkpoint against the wrong cache size** — the trunk has no intrinsic
    maximum length any more, so a 32-frame-trained model will happily run against a
-   64-frame cache and silently extrapolate. Validate the engine's `inputs_past_k`
+   64-frame cache and silently extrapolate. Validate the engine's `past_k`
    shape against the checkpoint's `window` at load time.
 4. **No parity/precision verification yet.** All measurements are fp32 with random
    weights, so `parity_matrix.py --trials 200` has not been and cannot be run — it

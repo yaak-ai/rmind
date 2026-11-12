@@ -262,6 +262,13 @@ def export(model: Module, args: tuple[Any, ...], out: Path, *, verify: bool) -> 
     ]
     logger.debug("inferred output_names", output_names=output_names)
 
+    paths_and_leaves, _ = tree_flatten_with_path(args[0])
+    input_names = [
+        ".".join(mk.key for mk in path)  # ty:ignore[unresolved-attribute]
+        for path, _ in paths_and_leaves
+    ]
+    logger.debug("inferred input_names", input_names=input_names)
+
     exported = torch.export.export(mod=model, args=tuple(args), strict=True)
     out.parent.mkdir(parents=True, exist_ok=True)
     torch.onnx.export(
@@ -272,6 +279,7 @@ def export(model: Module, args: tuple[Any, ...], out: Path, *, verify: bool) -> 
         optimize=True,
         verify=verify,
         report=False,
+        input_names=input_names,
         output_names=output_names,
         artifacts_dir=out.parent,
     )
