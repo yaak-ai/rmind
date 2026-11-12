@@ -93,8 +93,8 @@ the past by construction and every own-frame key is visible. The only masking is
 Single stacked tensor per side:
 
 ```
-past_k, past_v : (num_layers, batch, num_heads, cache_frames * 257, head_dim)
-new_k,  new_v  : (num_layers, batch, num_heads,            257, head_dim)
+past_k, past_v : (batch, num_layers, num_heads, cache_frames * 257, head_dim)
+new_k,  new_v  : (batch, num_layers, num_heads,            257, head_dim)
 cache_bias     : (1, 1, 1, cache_frames * 257)   0 = filled, -1e4 = empty
 rope_cos/sin   : (1, head_dim)
 ```
@@ -229,7 +229,7 @@ for name in ("inputs_past_k", "inputs_past_v", "inputs_cache_bias",
     expected = tuple(engine.get_tensor_shape(name))
     if tuple(buffers[name].shape) != expected:      # set_tensor_address does NOT check
         raise ValueError(f"{name}: engine wants {expected}, got {buffers[name].shape}")
-layers, _, heads, cache_tokens, head_dim = engine.get_tensor_shape("inputs_past_k")
+_, layers, heads, cache_tokens, head_dim = engine.get_tensor_shape("inputs_past_k")
 tokens_per_frame = engine.get_tensor_shape("new_k")[3]      # 257
 cache_frames = cache_tokens // tokens_per_frame             # context - 1
 
