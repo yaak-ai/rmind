@@ -1,0 +1,29 @@
+# @package _global_
+
+# B0 (/nasa/alex/docs/5U0ELM6G_IMPROVEMENT_PLAN.md): pai_ft_nogoal on the
+# 20k PAI cam90 set instead of the 2k slice. Same continuation checkpoint,
+# lr, loss weights and route-free setup; only the train data changes. Val is
+# the unchanged 198-clip pai_val, so val losses compare directly with
+# 5u0elm6g / 0jdcr0bv.
+#
+#   just train experiment=yaak/patch_policy/pai_ft_nogoal_20k \
+#       continuation_artifact=yaak/alex-tmp/model-dfldy2ki:v51
+#
+# ~11x the steps per epoch of the 2k slice, so it is capped at 2 epochs and
+# validated 4x per epoch: A1 (0jdcr0bv) showed val loss rising with more 2k
+# epochs, so the best checkpoint may be mid-run.
+
+defaults:
+  - /experiment/yaak/patch_policy/pai_ft_nogoal
+  - override /datamodule: yaak/pai20k
+  - _self_
+
+paths:
+  pai_data: /nasa/drives/pai_sample_20k_cam90
+
+trainer:
+  max_epochs: 2
+  val_check_interval: 0.25
+
+wandb:
+  tags: [patch_policy, pai_ft, physicalai_av, continuation, cam90, no_goal, pai20k]
