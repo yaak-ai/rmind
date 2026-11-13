@@ -1,4 +1,4 @@
-from functools import cache
+from functools import lru_cache
 from typing import TYPE_CHECKING, cast, final
 
 import torch
@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 
-@cache
+@lru_cache(maxsize=None)
 def _cached_zero(device: torch.device) -> Tensor:
     return torch.zeros((), device=device)
 
@@ -51,7 +51,7 @@ def _patch_vq_loss_init() -> None:
             and "device" in kwargs
         ):
             zero = _cached_zero(cast("torch.device", kwargs["device"]))
-            return zero.requires_grad_(bool(kwargs.get("requires_grad")))
+            return zero.requires_grad_(bool(kwargs.get("requires_grad", False)))
         return real_tensor(*args, **kwargs)
 
     _vqp.tensor = patched_tensor
