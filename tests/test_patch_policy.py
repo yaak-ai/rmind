@@ -15,6 +15,7 @@ from torch import Tensor
 from torch.nn import Identity, L1Loss, Linear, Module, Sequential
 from torchvision.ops import MLP
 
+from rmind.components.augment import ConditionalSpeedShift
 from rmind.components.base import Modality
 from rmind.components.containers import ModuleDict
 from rmind.components.loss import FocalLoss, WinnerTakesAllPoseLoss
@@ -161,6 +162,7 @@ def _make_model(  # noqa: PLR0913
     nulls: bool = False,
     trunk_dropout: float = 0.1,
     counterfactual_val_frames: int = 0,
+    speed_augment: Module | None = None,
 ) -> PatchPolicy:
     tokens_per_frame = len(cameras) * NUM_PATCHES + 1
     if use_readout_token:
@@ -231,6 +233,7 @@ def _make_model(  # noqa: PLR0913
         speed_dropout=speed_dropout,
         goal_dropout=goal_dropout,
         goal_absent=goal_absent,
+        speed_augment=speed_augment,
         teacher_force_offset=teacher_force_offset,
         prediction_config=PredictionConfig(
             objectives={
@@ -1813,3 +1816,73 @@ def test_continuation_overrides_only_the_named_loss_weights(
 
     with pytest.raises(ValueError, match="loss_weights key"):
         load(speed_dropout=0.0)
+
+
+class _RecordingSpeedAugment(Module):
+    """Doubles the speed and records what it was called with."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[tuple[Tensor, Tensor]] = []
+
+    def forward(self, speed: Tensor, target: Tensor) -> Tensor:
+        self.calls.append((speed, target))
+        return speed * 2.0
+
+
+def test_speed_augment_is_train_only_and_feeds_the_trunk() -> None:
+    augment = _RecordingSpeedAugment()
+    model = _make_model(
+        with_trajectory_head=True, speed_augment=augment, trunk_dropout=0.0
+    )
+    batch = _make_batch(with_trajectory_target=True)
+    doubled = {k: dict(v) if isinstance(v, dict) else v for k, v in batch.items()}
+    doubled["continuous"]["speed"] = batch["continuous"]["speed"] * 2.0
+
+    model.eval()
+    _features_seeded(model, batch)
+    assert not augment.calls  # identity outside training
+
+    model.train()
+    augmented = _features_seeded(model, batch)
+    ((speed, target),) = augment.calls
+    assert speed is batch["continuous"]["speed"]
+    assert target is batch["context"]["trajectory_target"]
+
+    # the trunk sees the augmented speed: same as feeding it directly with the
+    # augmentation off
+    model.speed_augment = None
+    torch.testing.assert_close(augmented, _features_seeded(model, doubled))
+
+
+def test_speed_augment_requires_a_trajectory_head() -> None:
+    with pytest.raises(ValueError, match="speed_augment requires"):
+        _make_model(speed_augment=_RecordingSpeedAugment())
+
+
+def test_continuation_sets_speed_augment(monkeypatch: pytest.MonkeyPatch) -> None:
+    optimizer = {"_target_": "torch.optim.AdamW", "_partial_": True, "lr": 3e-5}
+    config = {
+        "_target_": "rmind.components.augment.ConditionalSpeedShift",
+        "probability": 0.25,
+    }
+    source = _make_model(with_trajectory_head=True)
+    assert source.speed_augment is None
+    monkeypatch.setattr(
+        PatchPolicy, "load_from_wandb_artifact", lambda *_a, **_k: source
+    )
+    model = PatchPolicy.load_for_continuation(
+        "entity/project/model-x:v0", optimizer=optimizer, speed_augment=config
+    )
+    assert isinstance(model.speed_augment, ConditionalSpeedShift)
+    assert model.speed_augment.probability == pytest.approx(0.25)
+    assert model.hparams["speed_augment"]["_target_"] == config["_target_"]
+
+    no_head = _make_model()
+    monkeypatch.setattr(
+        PatchPolicy, "load_from_wandb_artifact", lambda *_a, **_k: no_head
+    )
+    with pytest.raises(ValueError, match="trajectory_head"):
+        PatchPolicy.load_for_continuation(
+            "entity/project/model-x:v0", optimizer=optimizer, speed_augment=config
+        )

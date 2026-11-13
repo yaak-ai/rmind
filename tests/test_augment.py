@@ -9,12 +9,16 @@ from torchvision.transforms.v2 import CenterCrop, Resize
 
 from rmind.components.augment import (
     ClipPhotometric,
+    ConditionalSpeedShift,
     FixedFrameMask,
     YawShiftCrop,
     rotate_ego_frame,
 )
 from rmind.components.containers import ModuleDict
-from rmind.components.dead_reckoning import dead_reckon_future_trajectory
+from rmind.components.dead_reckoning import (
+    dead_reckon_future_trajectory,
+    rolling_dead_reckoned_trajectory,
+)
 from rmind.models.patch_policy import PatchPolicy
 
 FX = 389.4  # fx_native 1298 px at 1920 -> 576 px wide
@@ -225,3 +229,83 @@ def test_frame_mask_hides_hood_and_arcs_at_any_shift(psi_deg: float) -> None:
     assert torch.equal(out[..., ~keep], torch.zeros_like(out[..., ~keep]))
     assert (out[..., keep] > 0.49).all()  # noqa: PLR2004
     assert 0.2 < (~keep).float().mean() < 0.35  # noqa: PLR2004
+
+
+def _speed_shift_inputs(
+    speed_kmh: torch.Tensor, *, episode_length: int, num_poses: int = 5
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """`(speed (b, t, 1), trajectory_target (b, t, P, 3))` as the input
+    transform would produce them, from a full-clip `(b, T)` speed profile at
+    3 Hz on a straight road.
+    """
+    b, t = speed_kmh.shape
+    heading = torch.zeros(b, t)
+    time_stamp_us = (torch.arange(t, dtype=torch.float64) * 1e6 / 3).expand(b, -1)
+    target = rolling_dead_reckoned_trajectory(
+        speed_kmh=speed_kmh,
+        heading_deg=heading,
+        time_stamp_us=time_stamp_us,
+        episode_length=episode_length,
+        num_poses=num_poses,
+    )
+    return speed_kmh[:, :episode_length, None], target
+
+
+def test_speed_shift_flags_braking_and_accelerating_frames() -> None:
+    # clip 0: braking 36 -> 0 km/h, clip 1: launching from 3.6 km/h,
+    # clip 2: cruising, clip 3: standing
+    t = 12
+    ramp = torch.arange(t, dtype=torch.float32)
+    speed = torch.stack([
+        (36.0 - 3.6 * ramp).clamp(min=0.0),
+        3.6 + 3.6 * ramp,
+        torch.full((t,), 50.0),
+        torch.zeros(t),
+    ])  # 3.6 km/h per 1/3 s tick = 3 m/s^2
+    module = ConditionalSpeedShift(min_accel=1.0, min_speed_kmh=2.0)
+    v, target = _speed_shift_inputs(speed, episode_length=6)
+    slowing, speeding_up = module.flags(v, target)
+
+    assert slowing[0].all()
+    assert not speeding_up[0].any()
+    assert speeding_up[1].all()
+    assert not slowing[1].any()
+    assert not (slowing[2:] | speeding_up[2:]).any()
+
+
+def test_speed_shift_is_rotation_invariant() -> None:
+    speed = (36.0 - 3.6 * torch.arange(12.0)).clamp(min=0.0)[None]
+    module = ConditionalSpeedShift()
+    v, target = _speed_shift_inputs(speed, episode_length=6)
+    psi = torch.full(target.shape[:2], 0.1)
+    rotated = torch.cat(
+        [rotate_ego_frame(target[..., :2], psi), target[..., 2:]], dim=-1
+    )
+    for a, b in zip(module.flags(v, target), module.flags(v, rotated), strict=True):
+        assert torch.equal(a, b)
+
+
+def test_speed_shift_boosts_braking_and_cuts_accelerating_speed() -> None:
+    t = 12
+    ramp = torch.arange(t, dtype=torch.float32)
+    speed = torch.stack([
+        (36.0 - 3.6 * ramp).clamp(min=0.0),
+        3.6 + 3.6 * ramp,
+        torch.full((t,), 50.0),
+    ])
+    v, target = _speed_shift_inputs(speed, episode_length=6)
+    boost, cut = (1.2, 1.4), (0.6, 0.8)
+    module = ConditionalSpeedShift(
+        probability=1.0, boost_scale=boost, cut_scale=cut
+    ).train()
+    out = module(v, target)
+
+    ratio = out / v
+    assert ((ratio[0] >= boost[0]) & (ratio[0] <= boost[1])).all()
+    assert ((ratio[1] >= cut[0]) & (ratio[1] <= cut[1])).all()
+    assert torch.equal(out[2], v[2])
+    # one factor per clip
+    assert torch.allclose(ratio[0], ratio[0, 0].expand_as(ratio[0]))
+
+    assert torch.equal(module.eval()(v, target), v)
+    assert torch.equal(ConditionalSpeedShift(probability=0.0).train()(v, target), v)

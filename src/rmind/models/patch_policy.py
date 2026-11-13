@@ -278,6 +278,13 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     (plan-end forward distance at frames stopped < `_STOPPED_MAX_SPEED_KMH`,
     speed input forced to 10 km/h vs the real one). Logging only; training is
     unaffected.
+
+    `speed_augment` (opt-in, `None` = off; requires `trajectory_head`): a
+    train-only module `(speed (b, t, 1), trajectory_target (b, t, P, 3)) ->
+    speed` applied to the speed INPUT before tokenization, e.g.
+    `rmind.components.augment.ConditionalSpeedShift`. Sits here rather than in
+    `input_transform` so continuation runs (whose `input_transform` comes from
+    the checkpoint) can enable it (`load_for_continuation(speed_augment=...)`).
     """
 
     _TURN_SIGNAL_CLASSES: ClassVar[int] = 3  # OFF, LEFT, RIGHT
@@ -324,6 +331,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         speed_dropout: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0,
         goal_dropout: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0,
         goal_absent: bool = False,
+        speed_augment: HydraConfig[Module] | InstanceOf[Module] | None = None,
         speed: Path = ("continuous", "speed"),
         waypoints: Path = ("context", "waypoints"),
         chunk: Path = ("joint_actions",),
@@ -449,6 +457,14 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             msg = "goal_absent requires null_goal"
             raise ValueError(msg)
         self.goal_absent = goal_absent
+        self.speed_augment: Module | None = (
+            None
+            if speed_augment is None
+            else init_hydra_param(hparams, "speed_augment", speed_augment)
+        )
+        if self.speed_augment is not None and self.trajectory_head is None:
+            msg = "speed_augment requires a trajectory_head (it reads its target)"
+            raise ValueError(msg)
         self.speed_dropout = speed_dropout
         self.goal_dropout = goal_dropout
         self.speed: Path = speed
@@ -880,6 +896,24 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                 "Tensor",
                 self._get(inputs, self.trajectory_target, required=require_chunk),
             )
+        if self.speed_augment is not None and self.training:
+            target = self._get(inputs, self.trajectory_target, required=False)
+            if target is not None:
+                augmented = self.speed_augment(speed, target)
+                changed = augmented.ne(speed).float()
+                self.log_dict(
+                    {
+                        "train/speed_augment/boosted_frac": (augmented > speed)
+                        .float()
+                        .mean(),
+                        "train/speed_augment/cut_frac": (augmented < speed)
+                        .float()
+                        .mean(),
+                        "train/speed_augment/changed_frac": changed.mean(),
+                    },
+                    sync_dist=True,
+                )
+                speed = augmented
 
         images = torch.stack(
             [image_by_camera[camera] for camera in self.cameras], dim=2
@@ -1591,7 +1625,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         return stages[0]
 
     @classmethod
-    def load_for_continuation(
+    def load_for_continuation(  # noqa: PLR0913
         cls,
         artifact: str,
         *,
@@ -1599,6 +1633,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         lr_scheduler: Any | None = None,
         loss_weights: Mapping[str, float] | None = None,
         goal_absent: bool | None = None,
+        speed_augment: Any | None = None,
         **_ignored: Any,
     ) -> "PatchPolicy":
         """Warm-start continuation training from a finished run's checkpoint.
@@ -1617,6 +1652,10 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         `goal_absent` (`None` = keep the checkpoint's) switches the route input
         off: the checkpoint's learned `null_goal` replaces the goal latent in
         training and validation alike (a permanent goal dropout).
+
+        `speed_augment` (`None` = keep the checkpoint's) sets the train-only
+        speed-input augmentation (see class docstring); it has no parameters,
+        so the loaded weights are unaffected.
 
         Raises:
             ValueError: if `loss_weights` names a key outside
@@ -1651,6 +1690,14 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                 raise ValueError(msg)
             model.goal_absent = goal_absent
             model.hparams["goal_absent"] = goal_absent
+        if speed_augment is not None:
+            if model.trajectory_head is None:
+                msg = "speed_augment requires a checkpoint with a trajectory_head"
+                raise ValueError(msg)
+            if not isinstance(speed_augment, HydraConfig):
+                speed_augment = HydraConfig[Module].model_validate(speed_augment)
+            model.speed_augment = speed_augment.instantiate()
+            model.hparams["speed_augment"] = speed_augment.model_dump()
         model.hparams["optimizer"] = optimizer.model_dump()
         model.hparams["lr_scheduler"] = (
             lr_scheduler.model_dump() if lr_scheduler is not None else None

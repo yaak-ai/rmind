@@ -1,0 +1,30 @@
+# @package _global_
+
+# pai_ft_nogoal + conditional speed-input shift (5U0ELM6G_IMPROVEMENT_PLAN.md,
+# speed lever; rmind.components.augment.ConditionalSpeedShift, train only).
+# On frames moving >= 2 km/h, per clip with p=0.5:
+#   - logged speed DROPS over the 5-pose horizon (mean decel >= 1 m/s^2):
+#     speed input x U(1.1, 1.5), target unchanged -> "too fast, brake";
+#   - logged speed RISES (mean accel >= 1 m/s^2): speed input x U(0.6, 0.9)
+#     -> "too slow, go".
+# Targets the front collisions (not braking) and rear hits (too slow) of
+# 5u0elm6g:v4. Logged share of touched frames: train/speed_augment/*.
+#
+#   just train experiment=yaak/patch_policy/pai_ft_nogoal_speedshift \
+#       continuation_artifact=yaak/alex-tmp/model-dfldy2ki:v51
+
+defaults:
+  - /experiment/yaak/patch_policy/pai_ft_nogoal
+  - _self_
+
+continuation_speed_augment:
+  _target_: rmind.components.augment.ConditionalSpeedShift
+  probability: 0.5
+  boost_scale: [1.1, 1.5]
+  cut_scale: [0.6, 0.9]
+  min_accel: 1.0
+  min_speed_kmh: 2.0
+  dt: 0.3333333333333333
+
+wandb:
+  tags: [patch_policy, pai_ft, physicalai_av, continuation, cam90, no_goal, speed_shift]

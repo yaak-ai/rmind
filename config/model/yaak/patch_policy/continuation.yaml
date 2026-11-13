@@ -28,3 +28,7 @@ loss_weights: ${oc.select:continuation_loss_weights,null}
 # null = keep the checkpoint's; true = route input off (null_goal in train AND
 # val, a permanent goal dropout), e.g. the pai_ft_nogoal arm.
 goal_absent: ${oc.select:continuation_goal_absent,null}
+
+# null = keep the checkpoint's; a HydraConfig sets the train-only speed-input
+# augmentation (PatchPolicy speed_augment), e.g. pai_ft_nogoal_speedshift.
+speed_augment: ${oc.select:continuation_speed_augment,null}

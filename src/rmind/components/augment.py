@@ -365,3 +365,92 @@ class FixedFrameMask(Module):
                     output, ("image", camera), image * self.keep.to(image.dtype)
                 )
         return output
+
+
+@final
+class ConditionalSpeedShift(Module):
+    """Perturb the speed INPUT against the direction the logged speed is about
+    to change, keeping the trajectory target as logged, so the trajectory head
+    learns to correct a speed error instead of copying the current speed
+    (/nasa/alex/docs/5U0ELM6G_IMPROVEMENT_PLAN.md: front collisions from not
+    braking, rear hits from being too slow).
+
+      - GT slowing down (decel >= `min_accel`): speed input scaled UP by a
+        factor in `boost_scale` -- "you are faster than you should be, brake".
+      - GT speeding up (accel >= `min_accel`): speed input scaled DOWN by a
+        factor in `cut_scale` -- "you are slower than you should be, go".
+
+    Only frames whose current speed is at least `min_speed_kmh` are touched.
+
+    Not an `input_transform` stage: `PatchPolicy._features` applies it (train
+    only), so continuation runs -- whose `input_transform` comes from the
+    checkpoint -- can switch it on.
+
+    The logged speed change of anchor frame `t` is read off its own
+    dead-reckoned `trajectory_target` `(b, t, P, 3)`: segment `k` of the target
+    is `v[t + k] * dt` (`rmind.components.dead_reckoning`), so the last segment
+    gives `v[t + P - 1]` and `(v_end - v_now) / ((P - 1) * dt)` the mean
+    acceleration over the horizon. Segment LENGTHS are used, so the result is
+    unaffected by `YawShiftCrop`'s rotation of the target.
+
+    Sampling: per clip, with probability `probability`, one boost factor and
+    one cut factor (constant within the clip, like the other clip-level
+    augmentations); each applies only to that clip's flagged frames.
+    Identity in eval.
+    """
+
+    @validate_call
+    def __init__(  # noqa: PLR0913
+        self,
+        *,
+        probability: float = 0.5,
+        boost_scale: tuple[float, float] = (1.1, 1.5),
+        cut_scale: tuple[float, float] = (0.6, 0.9),
+        min_accel: float = 1.0,
+        min_speed_kmh: float = 2.0,
+        dt: float = 1.0 / 3.0,
+    ) -> None:
+        super().__init__()
+
+        self.probability = probability
+        self.boost_scale = boost_scale
+        self.cut_scale = cut_scale
+        self.min_accel = min_accel
+        self.min_speed_kmh = min_speed_kmh
+        self.dt = dt
+
+    def flags(self, speed: Tensor, target: Tensor) -> tuple[Tensor, Tensor]:
+        """`(slowing, speeding_up)` boolean `(b, t)` masks.
+
+        `speed` `(b, t, 1)` km/h, `target` `(b, t, P, 3)` meters.
+
+        Raises:
+            ValueError: if the target has fewer than 2 poses.
+        """
+        xy = target[..., :2].float()
+        num_poses = xy.shape[-2]
+        if num_poses < 2:  # noqa: PLR2004
+            msg = "ConditionalSpeedShift needs a trajectory target with >= 2 poses"
+            raise ValueError(msg)
+        v_now_kmh = speed[..., 0].float()
+        v_now = v_now_kmh / 3.6
+        v_end = (xy[..., -1, :] - xy[..., -2, :]).norm(dim=-1) / self.dt
+        accel = (v_end - v_now) / ((num_poses - 1) * self.dt)
+        moving = v_now_kmh >= self.min_speed_kmh
+        return moving & (accel <= -self.min_accel), moving & (accel >= self.min_accel)
+
+    @override
+    def forward(self, speed: Tensor, target: Tensor) -> Tensor:
+        if not self.training:
+            return speed
+
+        slowing, speeding_up = self.flags(speed, target)
+        b = speed.shape[0]
+        device = speed.device
+        selected = torch.rand(b, 1, device=device) < self.probability
+        boost = torch.empty(b, 1, device=device).uniform_(*self.boost_scale)
+        cut = torch.empty(b, 1, device=device).uniform_(*self.cut_scale)
+        one = torch.ones((), device=device)
+        factor = torch.where(selected & slowing, boost, one)
+        factor = torch.where(selected & speeding_up, cut, factor)
+        return (speed.float() * factor[..., None]).to(speed.dtype)
