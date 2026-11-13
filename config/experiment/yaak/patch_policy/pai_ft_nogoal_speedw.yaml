@@ -1,0 +1,27 @@
+# @package _global_
+
+# B2 (/nasa/alex/docs/5U0ELM6G_IMPROVEMENT_PLAN.md): pai_ft_nogoal on the 2k
+# slice with clips that contain a speed change over-sampled to half of all
+# draws. A clip is flagged when the logged ego speed changes by more than
+# 2 m/s^2 over any 1 s window, or when it both stops (< 1 m/s) and moves
+# (> 3 m/s). That is 17% of the 2k train clips; they are drawn ~2.9x as often,
+# the rest ~0.6x. Everything else matches pai_ft_nogoal (5u0elm6g), so the
+# change is measured on its own.
+#
+#   just train experiment=yaak/patch_policy/pai_ft_nogoal_speedw \
+#       continuation_artifact=yaak/alex-tmp/model-dfldy2ki:v51
+
+defaults:
+  - /experiment/yaak/patch_policy/pai_ft_nogoal
+  - _self_
+
+datamodule:
+  train:
+    sample_weights:
+      _target_: rmind.components.sample_weights.speed_change_weights
+      _partial_: true
+      target_fraction: 0.5
+      accel_threshold: 2.0
+
+wandb:
+  tags: [patch_policy, pai_ft, physicalai_av, continuation, cam90, no_goal, speedw]

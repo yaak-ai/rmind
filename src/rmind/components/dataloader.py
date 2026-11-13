@@ -33,6 +33,7 @@ from torch.utils.data import (
     DistributedSampler,
     RandomSampler,
     SequentialSampler,
+    WeightedRandomSampler,
     default_collate,
 )
 from torchdata.nodes.loader import LoaderIterator
@@ -64,6 +65,7 @@ class DistributedTorchDataNodeDataLoader[T](Iterable[T], Sized):
         snapshot_frequency: int = 1,
         prebatch: int | None = None,
         seed: int = 0,
+        sample_weights: Callable[[BatchIndexableDataset], Any] | None = None,
     ) -> None:
         self._dataset = dataset
         self._batch_size = batch_size
@@ -82,6 +84,7 @@ class DistributedTorchDataNodeDataLoader[T](Iterable[T], Sized):
         self._pin_memory = pin_memory
         self._pin_memory_device = pin_memory_device
         self._prefetch_factor = prefetch_factor
+        self._sample_weights = sample_weights
 
         self._distributed_sampler: DistributedSampler[Any] | None = None
         self._sampler: BatchSampler | None = None
@@ -117,6 +120,9 @@ class DistributedTorchDataNodeDataLoader[T](Iterable[T], Sized):
         distributed = self._distributed_now()
         self._built_distributed = distributed
         if distributed:
+            if self._sample_weights is not None:
+                msg = "sample_weights is not supported under DDP yet"
+                raise NotImplementedError(msg)
             if self._method != "thread":
                 msg = (
                     "method='process' deadlocks under DDP (fork after CUDA init); "
@@ -135,6 +141,15 @@ class DistributedTorchDataNodeDataLoader[T](Iterable[T], Sized):
                 rank=self._distributed_sampler.rank,
                 world_size=self._distributed_sampler.num_replicas,
                 shard_len=self._distributed_sampler.num_samples,
+            )
+        elif self._sample_weights is not None:
+            # weighted draw WITH replacement, one epoch = len(dataset) draws
+            weights = self._sample_weights(self._dataset)
+            sampler = WeightedRandomSampler(  # type: ignore[assignment]
+                weights,
+                num_samples=len(self._dataset),  # type: ignore[arg-type]
+                replacement=True,
+                generator=self._generator,
             )
         else:
             sampler = (  # type: ignore[assignment]
